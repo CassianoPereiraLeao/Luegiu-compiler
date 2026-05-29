@@ -5,6 +5,11 @@ static Token peek(Parser *parser) {
     return parser->tokens.data[parser->cursor];
 }
 
+static Token seeforeward(Parser *parser, uint8_t distance) {
+    if(parser->cursor >= parser->tokens.count) return parser->tokens.data[parser->tokens.count - 1];
+    return parser->tokens.data[parser->cursor + distance];
+}
+
 static Token advance(Parser *parser) {
     if(parser->cursor < parser->tokens.count) 
         return parser->tokens.data[parser->cursor++];
@@ -37,6 +42,8 @@ static ASTNode* parse_if_statement(Parser *parser);
 static ASTNode* parse_for_statement(Parser *parser);
 static ASTNode* parse_while_statement(Parser *parser);
 static ASTNode* parse_do_while_statement(Parser *parser);
+static ASTNode* parse_statement(Parser *parser);
+static ASTNode* parse_typedef(Parser *parser);
 
 static ASTNode* parse_primary(Parser *parser) {
     Token current = peek(parser);
@@ -55,6 +62,27 @@ static ASTNode* parse_primary(Parser *parser) {
         return node;
     }
 
+    if(current.type == TOKEN_CHAR_LITERAL) {
+        advance(parser);
+        ASTNode* node = create_node(parser, NODE_CHAR_LITERAL);
+        node->ast.token = current;
+        return node;
+    }
+
+    if(current.type == TOKEN_STRING_LITERAL) {
+        advance(parser);
+        ASTNode* node = create_node(parser, NODE_STRING_LITERAL);
+        node->ast.token = current;
+        return node;
+    }
+
+    if(current.type == TOKEN_HEXA) {
+        advance(parser);
+        ASTNode* node = create_node(parser, NODE_HEXA);
+        node->ast.token = current;
+        return node;
+    }
+
     fprintf(stderr, "Erro de Sintaxe na linha %u, col %u: Esperado um número ou identificador, mas encontrou '%.*s'\n",
             current.line, current.col, (int)current.view.len, current.view.data);
     exit(1);
@@ -62,45 +90,79 @@ static ASTNode* parse_primary(Parser *parser) {
 
 static ASTNode* parse_postfix(Parser *parser) {
     ASTNode* expr = parse_primary(parser);
-    Token op = peek(parser);
 
-    if(op.type == TOKEN_LPAREN) {
-        advance(parser);
+    while(1) {
+        Token op = peek(parser);
 
-        if(expr->type != NODE_IDENTIFIER) {
-            fprintf(stderr, "Erro de Sintaxe: Apenas identificadores podem ser chamados como funcao.\n");
-            exit(1);
+        if(op.type == TOKEN_LPAREN) {
+            advance(parser);
+
+            if(expr->type != NODE_IDENTIFIER) {
+                fprintf(stderr, "Erro de Sintaxe: Apenas identificadores podem ser chamados como funcao.\n");
+                exit(1);
+            }
+
+            Token name = expr->ast.token;
+            ASTNode* args[16];
+            size_t args_count = 0;
+
+            if(peek(parser).type != TOKEN_RPAREN) {
+                do {
+                    args[args_count++] = parse_expr(parser);
+                } while(peek(parser).type == TOKEN_COMMA && advance(parser).type);
+            }
+
+            consume(parser, TOKEN_RPAREN, "Esperado ')' apos os argumentos da chamada de funcao.");
+
+            ASTNode* node = create_node(parser, NODE_FUNC_CALL);
+            node->ast.func_call.name = name;
+            node->ast.func_call.args_count = args_count;
+            node->ast.func_call.args = (ASTNode**)arena_alloc(parser->arena, sizeof(ASTNode*) * args_count);
+
+            for(size_t i = 0; i < args_count; i++)
+                node->ast.func_call.args[i] = args[i];
+            
+            expr = node;
+            continue;
         }
 
-        Token name = expr->ast.token;
-        ASTNode* args[16];
-        size_t args_count = 0;
+        if(op.type == TOKEN_LBRACKET) {
+            advance(parser);
 
-        if(peek(parser).type != TOKEN_RPAREN) {
-            do {
-                args[args_count++] = parse_expr(parser);
-            } while(peek(parser).type == TOKEN_COMMA && advance(parser).type);
+            ASTNode* index = parse_expr(parser);
+
+            consume(parser, TOKEN_RBRACKET, "Esperado ']' apos o indice do vetor.");
+
+            ASTNode* node = create_node(parser, NODE_INDEX_EXPR);
+            node->ast.binary.op = op;
+            node->ast.binary.left = expr;
+            node->ast.binary.right = index;
+            expr = node;
+            continue;
         }
-
-        consume(parser, TOKEN_RPAREN, "Esperado ')' apos os argumentos da chamada de funcao.");
-
-        ASTNode* node = create_node(parser, NODE_FUNC_CALL);
-        node->ast.func_call.name = name;
-        node->ast.func_call.args_count = args_count;
-        node->ast.func_call.args = (ASTNode**)arena_alloc(parser->arena, sizeof(ASTNode*) * args_count);
-
-        for(size_t i = 0; i < args_count; i++)
-            node->ast.func_call.args[i] = args[i];
         
-        return node;
-    }
-    
-    if(op.type == TOKEN_OP_PLUS_PLUS || op.type == TOKEN_OP_MINUS_MINUS) {
-        advance(parser);
-        ASTNode* node = create_node(parser, NODE_UNARY_POSTFIX_EXPR);
-        node->ast.unary.op = op;
-        node->ast.unary.operand = expr;
-        return node;
+        if(op.type == TOKEN_OP_PLUS_PLUS || op.type == TOKEN_OP_MINUS_MINUS) {
+            advance(parser);
+            ASTNode* node = create_node(parser, NODE_UNARY_POSTFIX_EXPR);
+            node->ast.unary.op = op;
+            node->ast.unary.operand = expr;
+            expr = node;
+            continue;
+        }
+
+        if(op.type == TOKEN_DOT) {
+            advance(parser);
+            Token member = consume(parser, TOKEN_IDENTIFIER, "Esperado o nome do membro apos o operador de acesso.");
+            ASTNode* node = create_node(parser, NODE_MEMBER_ACCESS);
+            node->ast.access_member.op = op;
+            node->ast.access_member.left = expr;
+            node->ast.access_member.member = member;
+
+            expr = node;
+            continue;
+        }
+
+        break;
     }
 
     return expr;
@@ -273,7 +335,9 @@ static ASTNode* parse_assignment(Parser *parser) {
         op.type == TOKEN_BIT_RSHIFT_EQ) {
         advance(parser);
 
-        if(expr->type != NODE_IDENTIFIER) {
+        if(expr->type != NODE_IDENTIFIER && expr->type != NODE_INDEX_EXPR &&
+            expr->type != NODE_MEMBER_ACCESS && !(expr->type == NODE_UNARY_PREFIX_EXPR 
+                && expr->ast.unary.op.type == TOKEN_OP_STAR)) {
             fprintf(stderr, "Erro de Sintaxe: Lado esquerdo da atribuicao precisa ser uma variavel.\n");
             exit(1);
         }
@@ -292,8 +356,39 @@ ASTNode* parse_expr(Parser *parser) {
     return parse_assignment(parser);
 }
 
+static ASTNode* parse_struct(Parser *parser) {
+    consume(parser, TOKEN_KEYWORD_STRUCT, "Esperado 'struct'.");
+    Token name = consume(parser, TOKEN_IDENTIFIER, "Esperado nome da struct.");
+
+    consume(parser, TOKEN_LBRACE, "Esperado '{' para iniciar o corpo da struct.");
+
+    ASTNode* fields[32];
+    size_t fields_count = 0;
+
+    while(peek(parser).type != TOKEN_RBRACE) fields[fields_count++] = parse_var(parser);
+
+    consume(parser, TOKEN_RBRACE, "Esperado '}' para fechar o corpo da struct.");
+    consume(parser, TOKEN_SEMICOLON, "Esperado ';' apos a definicao da struct.");
+
+    ASTNode* node = create_node(parser, NODE_STRUCT_DECL);
+    node->ast.struct_decl.name = name;
+    node->ast.struct_decl.fields_count = fields_count;
+
+    node->ast.struct_decl.fields = (ASTNode**)arena_alloc(parser->arena, sizeof(ASTNode*) * fields_count);
+
+    for(size_t i = 0; i < fields_count; i++)
+        node->ast.struct_decl.fields[i] = fields[i];
+
+    return node;
+}
+
 static ASTNode* parse_var(Parser *parser) {
     Token type = advance(parser);
+
+    if(type.type == TOKEN_KEYWORD_STRUCT) {
+        Token name = consume(parser, TOKEN_IDENTIFIER, "Esperado o nome da struct apos a palavra-chave 'struct'.");
+        type = name;
+    }
 
     size_t pointer_lvl = 0;
     while(peek(parser).type == TOKEN_OP_STAR) {
@@ -312,14 +407,36 @@ static ASTNode* parse_var(Parser *parser) {
         if(peek(parser).type != TOKEN_RPAREN) {
             do {
                 Token param_type = advance(parser);
+
+                size_t param_pointer_lvl = 0;
+                while(peek(parser).type == TOKEN_OP_STAR) {
+                    advance(parser);
+                    param_pointer_lvl++;
+                }
+
                 Token param_id = consume(parser, TOKEN_IDENTIFIER, "Esperado nome do parametro.");
+
+                if(peek(parser).type == TOKEN_LBRACKET) {
+                    advance(parser);
+
+                    if(peek(parser).type != TOKEN_RBRACKET)
+                        parse_expr(parser);
+                    consume(parser, TOKEN_RBRACKET, "Esperado ']' no parametro.");
+                }
+
                 ASTNode* node = create_node(parser, NODE_VAR_DECL);
                 node->ast.var_decl.type = param_type;
                 node->ast.var_decl.identifier = param_id;
                 node->ast.var_decl.value = NULL;
+                node->ast.var_decl.pointer_lvl = param_pointer_lvl;
 
                 params[param_count++] = node;
-            } while(peek(parser).type == TOKEN_COMMA && advance(parser).type);
+
+                if(peek(parser).type == TOKEN_COMMA)
+                    advance(parser);
+                else
+                    break;
+            } while(1);
         }
 
         consume(parser, TOKEN_RPAREN, "Esperado ')' apos os parametros.");
@@ -338,11 +455,19 @@ static ASTNode* parse_var(Parser *parser) {
         return node;
     }
 
+    ASTNode* array_size = NULL;
+    if(peek(parser).type == TOKEN_LBRACKET) {
+        advance(parser);
+        array_size = parse_expr(parser);
+        consume(parser, TOKEN_RBRACKET, "Esperado ']' apos o tamanho do vetor na declaracao.");
+    }
+
     ASTNode* node = create_node(parser, NODE_VAR_DECL);
     node->ast.var_decl.type = type;
     node->ast.var_decl.identifier = identifier;
     node->ast.var_decl.value = NULL;
     node->ast.var_decl.pointer_lvl = pointer_lvl;
+    node->ast.var_decl.size = array_size;
 
     Token current = peek(parser);
     if(current.type == TOKEN_OP_ASSIGN) {
@@ -351,6 +476,30 @@ static ASTNode* parse_var(Parser *parser) {
     }
 
     consume(parser, TOKEN_SEMICOLON, "Esperado ';' no final da declaracao de variavel.");
+    return node;
+}
+
+static ASTNode* parse_typedef(Parser *parser) {
+    consume(parser, TOKEN_KEYWORD_TYPEDEFINITION, "Esperado 'typedefinition'.");
+
+    Token base = advance(parser);
+    if(base.type == TOKEN_KEYWORD_STRUCT) {
+        base = consume(parser, TOKEN_IDENTIFIER, "Esperado nome da struct apos 'struct' no typedef.");
+    }
+
+    size_t pointer_lvl = 0;
+    while(peek(parser).type == TOKEN_OP_STAR) {
+        advance(parser);
+        pointer_lvl++;
+    }
+
+    Token type = consume(parser, TOKEN_IDENTIFIER, "Esperado o nome do novo tipo.");
+    consume(parser, TOKEN_SEMICOLON, "Esperado ';' no final do typedef.");
+
+    ASTNode* node = create_node(parser, NODE_TYPEDEF);
+    node->ast.typedef_decl.type = base;
+    node->ast.typedef_decl.name = type;
+    node->ast.typedef_decl.pointer_lvl = pointer_lvl;
     return node;
 }
 
@@ -468,7 +617,7 @@ static ASTNode* parse_block(Parser *parser) {
     return node;
 }
 
-ASTNode* parse_statement(Parser *parser) {
+static ASTNode* parse_statement(Parser *parser) {
     Token current = peek(parser);
 
     printf("[DEBUG PARSER] O token atual e do tipo numerico: %d | Texto: '%.*s'\n", 
@@ -504,12 +653,37 @@ ASTNode* parse_statement(Parser *parser) {
         return create_node(parser, NODE_BREAK_STMT);
     }
 
+    if(current.type == TOKEN_KEYWORD_STRUCT) {
+        if(seeforeward(parser, 1).type == TOKEN_IDENTIFIER && seeforeward(parser, 2).type == TOKEN_LBRACE)
+            return parse_struct(parser);
+        return parse_var(parser);
+    }
+
     if(current.type == TOKEN_KEYWORD_IF)         return parse_if_statement(parser);
     if(current.type == TOKEN_KEYWORD_WHILE)      return parse_while_statement(parser);
     if(current.type == TOKEN_KEYWORD_DO)         return parse_do_while_statement(parser);
     if(current.type == TOKEN_KEYWORD_FOR)        return parse_for_statement(parser);
+    if(current.type == TOKEN_KEYWORD_TYPEDEFINITION) return parse_typedef(parser);
     
     ASTNode* expr = parse_expr(parser);
     consume(parser, TOKEN_SEMICOLON, "Esperado ';' apos a expressao.");
     return expr;
+}
+
+ASTNode* parse_program(Parser *parser) {
+    ASTNode* node = create_node(parser, NODE_PROGRAM);
+
+    ASTNode* statements[1024];
+    size_t count = 0;
+
+    while(peek(parser).type != TOKEN_EOF)
+        statements[count++] = parse_statement(parser);
+
+    node->ast.program.count = count;
+    node->ast.program.statements = (ASTNode**)arena_alloc(parser->arena, sizeof(ASTNode*) * count);
+
+    for(size_t i = 0; i < count; i++)
+        node->ast.program.statements[i] = statements[i];
+    
+    return node;
 }

@@ -1,21 +1,19 @@
-int start_program(int argc, char argv) {
-    for(int i = 0; i < 10; i++) {
-        if(i == 5) {
-            continue;
-        } else if (i == 8) {
-            break;
-        } else {
-            int x = i;
-        }
+link end(int arg) {
+    return 0x0;
+}
+
+link start(int argc, char* argv[]) {
+    do {
+        int j = 0;
+    } while(1);
+
+    while(1) {
+        int x = 0;
     }
 
-    int i = 0;
-    i &= 0;
-    int* ptr = &i;
-    int x = 0;
-    x |= 1;
-
-    if(i& i || i == i && i == x || i << 3) {
-        return;
+    for(int16 i = 0; i < 10; i++) {
+        int x = 0;
     }
+
+    return end(0);
 }

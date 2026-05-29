@@ -6,3 +6,5 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
+
+typedef struct ASTNode ASTNode;

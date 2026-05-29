@@ -5,6 +5,11 @@ static char peek(Lexer *lexer) {
     return lexer->source[lexer->cursor];
 }
 
+static char seeforeward(Lexer *lexer, uint8_t distance) {
+    if(lexer->cursor >= lexer->src_len) return '\0';
+    return lexer->source[lexer->cursor + distance];
+}
+
 static char advance(Lexer *lexer) {
     if(lexer->cursor >= lexer->src_len) return '\0';
     char c = lexer->source[lexer->cursor];
@@ -23,6 +28,10 @@ static bool is_digit(char c) {
 
 static bool is_alphanumeric(char c) {
     return is_alpha(c) || is_digit(c);
+}
+
+static bool is_hexa(char c) {
+    return is_alpha(c) || (c >= 'A' && c <= 'F');
 }
 
 Lexer create_lexer(const char* src, size_t len) {
@@ -79,6 +88,7 @@ static TokenType check_keyword(View view) {
     if(strcompare(view, "else")) return TOKEN_KEYWORD_ELSE;
     if(strcompare(view, "struct")) return TOKEN_KEYWORD_STRUCT;
     if(strcompare(view, "static")) return TOKEN_KEYWORD_STATIC;
+    if(strcompare(view, "link")) return TOKEN_KEYWORKD_LINK;
 
     return TOKEN_IDENTIFIER;
 }
@@ -123,6 +133,36 @@ Token_Array tokenize(Lexer *lexer, Arena* arena) {
         const char* start_ptr = &lexer->source[lexer->cursor];
         uint32_t token_line = lexer->line;
         uint32_t token_col = lexer->col;
+
+        if(current == '0') {
+            char next = seeforeward(lexer, 1);
+            if(next == 'x') {
+                size_t start = lexer->cursor;
+                advance(lexer);
+                advance(lexer);
+
+                while(is_hexa(peek(lexer))) advance(lexer);
+
+                if(peek(lexer) >= 'a' && peek(lexer) <= 'f') {
+                    fprintf(stderr, "Erro de Lexico na linha %u, col %u: Letras minusculas nao sao permitidas em hexadecimais. Use '%c' em vez de '%c'.\n",
+                            lexer->line, lexer->col, peek(lexer) - 32, peek(lexer));
+                    exit(1);
+                }
+
+                Token token = {
+                    .line = token_line,
+                    .col = token_col,
+                    .type = TOKEN_HEXA,
+                    .view = {
+                        .data = start_ptr,
+                        .len = lexer->cursor - start
+                    }
+                };
+
+                array.data[array.count++] = token;
+                continue;
+            }
+        }
 
         if(is_alpha(current)) {
             size_t start_pos = lexer->cursor;
@@ -183,6 +223,44 @@ Token_Array tokenize(Lexer *lexer, Arena* arena) {
         case '.': advance(lexer); token.type = TOKEN_DOT; break;
         case '?': advance(lexer); token.type = TOKEN_OP_TERN; break;
         case ',': advance(lexer); token.type = TOKEN_COMMA; break;
+        case '"': {
+            advance(lexer);
+            const char* ptr = &lexer->source[lexer->cursor];
+            size_t start = lexer->cursor;
+            
+            while(peek(lexer) != '"' && peek(lexer) != '\0')
+                advance(lexer);
+            
+            if (peek(lexer) == '\0') {
+                fprintf(stderr, "Erro Lexico na linha %zu: String nao fechada.\n", lexer->line);
+                exit(1);
+            }
+
+            token.type = TOKEN_STRING_LITERAL;
+            token.view.len = lexer->cursor - start;
+            token.view.data = ptr;
+            advance(lexer);
+            break;
+        }
+        case '\'': {
+            advance(lexer);
+            const char* ptr = &lexer->source[lexer->cursor];
+            size_t start = lexer->cursor;
+
+            if(peek(lexer) != '\'')
+                advance(lexer);
+
+            if (peek(lexer) != '\'') {
+                fprintf(stderr, "Erro Lexico na linha %zu: Literal de caractere invalido ou nao fechado.\n", lexer->line);
+                exit(1);
+            }
+
+            token.view.len = lexer->cursor - start;
+            token.type = TOKEN_CHAR_LITERAL;
+            token.view.data = ptr;
+            advance(lexer);
+            break;
+        }
         case '=':
             advance(lexer);
 
