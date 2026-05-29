@@ -11,7 +11,11 @@ int start_program(int argc, char argv) {
 
     int i = 0;
     i &= 0;
-    if(i& i) {
+    int* ptr = &i;
+    int x = 0;
+    x |= 1;
+
+    if(i& i || i == i && i == x || i << 3) {
         return;
     }
 }

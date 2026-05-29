@@ -109,8 +109,15 @@ static ASTNode* parse_postfix(Parser *parser) {
 static ASTNode* parse_prefix(Parser *parser) {
     Token op = peek(parser);
 
-    if(op.type == TOKEN_OP_PLUS_PLUS || op.type == TOKEN_OP_MINUS_MINUS || op.type == TOKEN_OP_MINUS ||
-        op.type == TOKEN_BIT_AND || op.type == TOKEN_OP_STAR) {
+    if (op.type == TOKEN_OP_PLUS_PLUS || op.type == TOKEN_OP_MINUS_MINUS) {
+        advance(parser);
+        ASTNode* node = create_node(parser, NODE_UNARY_PREFIX_EXPR);
+        node->ast.unary.op = op;
+        node->ast.unary.operand = parse_postfix(parser); 
+        return node;
+    }
+
+    if(op.type == TOKEN_OP_MINUS || op.type == TOKEN_BIT_AND || op.type == TOKEN_OP_STAR) {
         advance(parser);
         ASTNode* node = create_node(parser, NODE_UNARY_PREFIX_EXPR);
         node->ast.unary.op = op;
@@ -287,6 +294,13 @@ ASTNode* parse_expr(Parser *parser) {
 
 static ASTNode* parse_var(Parser *parser) {
     Token type = advance(parser);
+
+    size_t pointer_lvl = 0;
+    while(peek(parser).type == TOKEN_OP_STAR) {
+        advance(parser);
+        pointer_lvl++;
+    }
+
     Token identifier = consume(parser, TOKEN_IDENTIFIER, "Esperado o nome da variavel apos o tipo.");
 
     if(peek(parser).type == TOKEN_LPAREN) {
@@ -328,6 +342,7 @@ static ASTNode* parse_var(Parser *parser) {
     node->ast.var_decl.type = type;
     node->ast.var_decl.identifier = identifier;
     node->ast.var_decl.value = NULL;
+    node->ast.var_decl.pointer_lvl = pointer_lvl;
 
     Token current = peek(parser);
     if(current.type == TOKEN_OP_ASSIGN) {

@@ -47,6 +47,7 @@ struct ASTNode {
             Token type;
             Token identifier;
             ASTNode* value;
+            size_t pointer_lvl;
         } var_decl;
 
         struct {
