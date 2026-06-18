@@ -1,0 +1,58 @@
+preprocess LNULL -> 0x00
+
+typedefinition struct {
+    link handle;
+    char* buffer;
+    int bytes_read;
+} FileResult;
+
+uint64 strlen(const char* str) {
+    uint64 n = 0;
+    while(str[n] != 0) n++;
+    return n;
+}
+
+bool show(const char* str) {
+    __write_stdout(str, strlen(str));
+}
+
+link* memoryalloc(uint64 size) {
+    link* ptr = __malloc(size);
+    if(!ptr) {
+        show("Error on malloc\n");
+        return LNULL;
+    }
+
+    return ptr;
+}
+
+link file_open(const char* path, int mode) {
+    link file = __open_file(path, mode);
+    if(!file) {
+        show("Error on file_open\n");
+        return LNULL;
+    }
+    return file;
+}
+
+uint64 file_read() {
+    
+}
+
+void file_close() {
+    
+}
+
+void read_whole_file(const char* path, FileResult* out) {
+    link handle = file_open(path, 0);
+    if(!handle) {
+        show("Erro ao abrir arquivo\n");
+        out->bytes_read = 0;
+        return;
+    }
+
+    char* buffer = memoryalloc(4 * KB);
+    int bytes_read = file_read(handle, buffer, 4 * KB);
+
+    file_close(handle);
+}

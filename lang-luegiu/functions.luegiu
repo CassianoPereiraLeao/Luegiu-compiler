@@ -1,0 +1,30 @@
+preprocess NULL -> 0
+preprocess LNULL -> 0x00
+typedefinition uint64 dimention
+
+dimention strlen(const char* str) {
+    uint64 n = 0;
+    while(str[n]) n++;
+    return n; 
+}
+
+bool show(const char* format) {
+    __write_stdout(format, strlen(src));
+    return true;
+}
+
+bool showi(big value) {
+    __write_int(value);
+    return true;
+}
+
+link end(int code) {
+    if(value < 0) {
+        __Exit(1);
+    }
+
+    if(code == 0) {
+        show("Success");
+        return 0x00;
+    }
+}
