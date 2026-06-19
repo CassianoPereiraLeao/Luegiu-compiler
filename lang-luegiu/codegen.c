@@ -9,6 +9,30 @@
 #define TI(value)   codegen_buffer_writei(&codegen->sec_text, (long long)(value))
 #define TU(value)   codegen_buffer_writeu(&codegen->sec_text, (size_t)(value))
 
+#define PROLOG(name_str, local_size) \
+    do { \
+        T("\n" name_str ":\n"); \
+        TAB; T("push rbp"); NL; \
+        TAB; T("mov rbp, rsp"); NL; \
+        if ((local_size) > 0) { TAB; T("sub rsp, "); TI(local_size); NL; } \
+    } while(0)
+
+#define EPILOG \
+    do { \
+        TAB; T("mov rsp, rbp"); NL; \
+        TAB; T("pop rbp"); NL; \
+        TAB; T("ret"); NL; \
+    } while(0)
+
+#define SAVE_PARAM_RCX(offset) \
+    do { TAB; T("mov [rbp-"); TI(offset); T("], rcx"); NL; } while(0)
+
+#define SAVE_PARAM_RDX(offset) \
+    do { TAB; T("mov [rbp-"); TI(offset); T("], rdx"); NL; } while(0)
+
+#define SAVE_PARAM_R8(offset) \
+    do { TAB; T("mov [rbp-"); TI(offset); T("], r8"); NL; } while(0)
+
 static void codegen_expr(CodeGen *codegen, Node *expr);
 static void codegen_stmt(CodeGen *codegen, Node *stmt);
 static void codegen_block(CodeGen *codegen, Node *block);
@@ -355,7 +379,7 @@ static int bytes_data_value(TokenType type) {
     case TOKEN_KEYWORD_UINT64:  return 8;
     case TOKEN_KEYWORD_FLOAT:   return 4;
     case TOKEN_KEYWORD_DOUBLE:  return 8;
-    case TOKEN_KEYWORKD_LINK:   return 8;
+    case TOKEN_KEYWORD_LINK:   return 8;
     default:                    return 8;
     }
 }
@@ -1136,14 +1160,11 @@ static void codegen_global_var(CodeGen *codegen, Node *node) {
     }
 }
 
-static void emit_builtin_write(CodeGen *codegen) {
-    T("\n__write_stdout:\n");
-    TAB; T("push rbp"); NL;
-    TAB; T("mov rbp, rsp"); NL;
-    TAB; T("sub rsp, 64"); NL;
+static void emit_builtin_write_stdout(CodeGen *codegen) {
+    PROLOG("__write_stdout", 24);
 
-    TAB; T("mov [rbp-8],  rcx"); NL;
-    TAB; T("mov [rbp-16], rdx"); NL;
+    SAVE_PARAM_RCX(8);
+    SAVE_PARAM_RDX(16);
 
     TAB; T("mov rcx, 0xFFFFFFFFFFFFFFF5"); NL;
     TAB; T("call [rel __imp_GetStdHandle]"); NL;
@@ -1155,76 +1176,65 @@ static void emit_builtin_write(CodeGen *codegen) {
     TAB; T("mov rdx, [rbp-8]"); NL;
     TAB; T("mov r8d, dword [rbp-16]"); NL;
     TAB; T("mov qword [rsp+32], 0"); NL;
+
     TAB; T("call [rel __imp_WriteFile]"); NL;
 
-    TAB; T("mov rsp, rbp"); NL;
-    TAB; T("pop rbp"); NL;
-    TAB; T("ret"); NL;
+    EPILOG;
 }
 
 static void emit_builtin_exit(CodeGen *codegen) {
-    T("\n__exit:\n");
-    TAB; T("push rbp"); NL;
-    TAB; T("mov rbp, rsp"); NL;
-    TAB; T("sub rsp, 32"); NL;
+    PROLOG("__exit", 32);
+
     TAB; T("call [rel __imp_ExitProcess]"); NL;
     TAB; T("hlt"); NL;
 }
 
 static void emit_builtin_write_int(CodeGen *codegen) {
-    T("\n__write_int:\n");
-    TAB; T("push rbp"); NL;
-    TAB; T("mov rbp, rsp"); NL;
-    TAB; T("sub rsp, 32"); NL;
-    TAB; T("mov [rbp - 8], rcx"); NL;
-    TAB; T("mov rcx, [rbp - 8]"); NL;
+    PROLOG("__write_int", 16);
+    
+    SAVE_PARAM_RCX(8);
+
+    TAB; T("mov rcx, [rbp-8]"); NL;
     TAB; T("call __int_to_str"); NL;
+
     TAB; T("mov rcx, rax"); NL;
     TAB; T("call __write_stdout"); NL;
-    TAB; T("mov rsp, rbp"); NL;
-    TAB; T("pop rbp"); NL;
-    TAB; T("ret"); NL;
+
+    EPILOG;
 }
 
 static void emit_builtin_malloc(CodeGen *codegen) {
-    T("\n__malloc:\n");
-    TAB; T("push rbp"); NL;
-    TAB; T("mov rbp, rsp"); NL;
-    TAB; T("sub rsp, 32"); NL;
+    PROLOG("__malloc", 32);
 
     TAB; T("mov rdx, rcx"); NL;
     TAB; T("xor rcx, rcx"); NL;
     TAB; T("mov r8, 0x3000"); NL;
     TAB; T("mov r9, 0x04"); NL;
-    TAB; T("call [rel __imp_VirtualAlloc]"); NL;
 
-    TAB; T("mov rsp, rbp"); NL;
-    TAB; T("pop rbp"); NL;
-    TAB; T("ret"); NL;
+    TAB; T("sub rsp, 32"); NL;
+    TAB; T("call [rel __imp_VirtualAlloc]"); NL;
+    TAB; T("add rsp, 32"); NL;
+
+    EPILOG;
 }
 
 static void emit_builtin_free(CodeGen *codegen) {
-    T("\n__free:\n");
-    TAB; T("push rbp"); NL;
-    TAB; T("mov rbp, rsp"); NL;
-    TAB; T("sub rsp, 32"); NL;
+    PROLOG("__free", 32);
 
     TAB; T("mov rdx, 0"); NL;
     TAB; T("mov r8, 0x8000"); NL;
-    TAB; T("call [rel __imp_VirtualFree]"); NL;
 
-    TAB; T("mov rsp, rbp"); NL;
-    TAB; T("pop rbp"); NL;
-    TAB; T("ret"); NL;
+    TAB; T("sub rsp, 32"); NL;
+    TAB; T("call [rel __imp_VirtualFree]"); NL;
+    TAB; T("add rsp, 32"); NL;
+
+    EPILOG;
 }
 
 static void emit_builtin_parse_args(CodeGen *codegen) {
-    T("\n__parse_args:\n");
-    TAB; T("push rbp"); NL;
-    TAB; T("mov rbp, rsp"); NL;
-    TAB; T("sub rsp, 48"); NL;
+    PROLOG("__parse_args", 48);
 
-    TAB; T("mov [rbp-8], rcx"); NL;
+    SAVE_PARAM_RCX(8);
 
     TAB; T("sub rsp, 32"); NL;
     TAB; T("call [rel __imp_GetCommandLineA]"); NL;
@@ -1232,11 +1242,13 @@ static void emit_builtin_parse_args(CodeGen *codegen) {
 
     TAB; T("mov rsi, rax"); NL;
     TAB; T("mov rdi, rax"); NL;
+
     T("__pargs_strlen:\n");
     TAB; T("cmp byte [rdi], 0"); NL;
     TAB; T("je __pargs_strlen_done"); NL;
     TAB; T("inc rdi"); NL;
     TAB; T("jmp __pargs_strlen"); NL;
+
     T("__pargs_strlen_done:\n");
     TAB; T("sub rdi, rsi"); NL;
     TAB; T("inc rdi"); NL;
@@ -1251,6 +1263,7 @@ static void emit_builtin_parse_args(CodeGen *codegen) {
     TAB; T("mov [rbp-16], rax"); NL;
 
     TAB; T("mov rdi, rax"); NL;
+
     T("__pargs_copy:\n");
     TAB; T("mov al, [rsi]"); NL;
     TAB; T("mov [rdi], al"); NL;
@@ -1259,106 +1272,57 @@ static void emit_builtin_parse_args(CodeGen *codegen) {
     TAB; T("inc rsi"); NL;
     TAB; T("inc rdi"); NL;
     TAB; T("jmp __pargs_copy"); NL;
+
     T("__pargs_copy_done:\n");
 
     TAB; T("mov rsi, [rbp-16]"); NL;
-    TAB; T("mov rdi, [rbp-8]");  NL;
-    TAB; T("xor rcx, rcx");      NL;
+    TAB; T("mov rdi, [rbp-8]"); NL;
+    TAB; T("xor rcx, rcx"); NL;
 
-    T("__pargs_skip:\n");
-    TAB; T("movzx rax, byte [rsi]"); NL; 
-    TAB; T("test al, al"); NL;
-    TAB; T("jz __pargs_done"); NL;
-    TAB; T("cmp al, ' '"); NL;
-    TAB; T("je __pargs_space"); NL;
-
-    TAB; T("mov [rdi + rcx*8], rsi"); NL;
-    TAB; T("inc rcx"); NL;
-
-    T("__pargs_token:\n");
+    T("__pargs_skip_space:\n");
     TAB; T("movzx rax, byte [rsi]"); NL;
     TAB; T("test al, al"); NL;
     TAB; T("jz __pargs_done"); NL;
     TAB; T("cmp al, ' '"); NL;
-    TAB; T("je __pargs_end_token"); NL;
-    TAB; T("inc rsi"); NL;
-    TAB; T("jmp __pargs_token"); NL;
+    TAB; T("je __pargs_next_space"); NL;
 
-    T("__pargs_end_token:\n");
+    TAB; T("mov [rdi + rcx*8], rsi"); NL;
+    TAB; T("inc rcx"); NL;
+
+    T("__pargs_skip_token:\n");
+    TAB; T("movzx rax, byte [rsi]"); NL;
+    TAB; T("test al, al"); NL;
+    TAB; T("jz __pargs_done"); NL;
+    TAB; T("cmp al, ' '"); NL;
+    TAB; T("je __pargs_null_term"); NL;
+    TAB; T("inc rsi"); NL;
+    TAB; T("jmp __pargs_skip_token"); NL;
+
+    T("__pargs_null_term:\n");
     TAB; T("mov byte [rsi], 0"); NL;
     TAB; T("inc rsi"); NL;
-    TAB; T("jmp __pargs_skip"); NL;
+    TAB; T("jmp __pargs_skip_space"); NL;
 
-    T("__pargs_space:\n");
+    T("__pargs_next_space:\n");
     TAB; T("inc rsi"); NL;
-    TAB; T("jmp __pargs_skip"); NL;
+    TAB; T("jmp __pargs_skip_space"); NL;
 
     T("__pargs_done:\n");
     TAB; T("mov rax, rcx"); NL;
-    TAB; T("mov rsp, rbp"); NL;
-    TAB; T("pop rbp"); NL;
-    TAB; T("ret"); NL;
-}
 
-static void emit_builtin_write_w(CodeGen *codegen) {
-    T("\n__write_stdout_w:\n");
-    TAB; T("push rbp"); NL;
-    TAB; T("mov rbp, rsp"); NL;
-    TAB; T("sub rsp, 64"); NL;
-
-    TAB; T("mov [rbp-8], rcx"); NL;
-    TAB; T("mov [rbp-16], rdx"); NL;
-
-    TAB; T("mov rcx, 0xFFFFFFFFFFFFFFF5"); NL;
-    TAB; T("call [rel __imp_GetStdHandle]"); NL;
-    TAB; T("mov [rbp-24], rax"); NL;
-
-    TAB; T("mov rcx, rax"); NL;
-    TAB; T("call [rel __imp_GetFileType]"); NL;
-
-    TAB; T("cmp eax, 0x0002"); NL;
-    TAB; T("je __wsw_console"); NL;
-
-    T("__wsw_file:\n");
-    TAB; T("mov qword [rbp-32], 0"); NL;
-    TAB; T("lea r9, [rbp-32]"); NL;
-    TAB; T("mov rcx, [rbp-24]"); NL;
-    TAB; T("mov rdx, [rbp-8]"); NL;
-    TAB; T("mov r8d, dword [rbp-16]"); NL;
-    TAB; T("mov qword [rsp+32], 0"); NL;
-    TAB; T("call [rel __imp_WriteFile]"); NL;
-    TAB; T("jmp __wsw_done"); NL;
-
-    T("__wsw_console:\n");
-    TAB; T("mov rax, [rbp-16]"); NL;
-    TAB; T("shr rax, 1"); NL;
-    TAB; T("mov r8, rax"); NL;
-    TAB; T("mov qword [rbp-40], 0"); NL;
-    TAB; T("lea r9, [rbp-40]"); NL;
-    TAB; T("mov rcx, [rbp-24]"); NL;
-    TAB; T("mov rdx, [rbp-8]"); NL;
-    TAB; T("mov qword [rbp+32], 0"); NL;
-    TAB; T("call [rel __imp_WriteConsoleW]"); NL;
-
-    T("__wsw_done:\n");
-    TAB; T("mov rsp, rbp"); NL;
-    TAB; T("pop rbp"); NL;
-    TAB; T("ret"); NL;
+    EPILOG;
 }
 
 static void emit_builtin_parse_args_w(CodeGen *codegen) {
-    T("\n__parse_args_w:\n");
-    TAB; T("push rbp"); NL;
-    TAB; T("mov rbp, rsp"); NL;
-    TAB; T("sub rsp, 64"); NL;
-
-    TAB; T("mov [rbp-8], rcx"); NL;
+    PROLOG("__parse_args_w", 64);
+    
+    SAVE_PARAM_RCX(8);
 
     TAB; T("sub rsp, 32"); NL;
     TAB; T("call [rel __imp_GetCommandLineW]"); NL;
     TAB; T("add rsp, 32"); NL;
     TAB; T("mov rcx, rax"); NL;
-    
+
     TAB; T("lea rdx, [rbp-16]"); NL;
     TAB; T("sub rsp, 32"); NL;
     TAB; T("call [rel __imp_CommandLineToArgvW]"); NL;
@@ -1380,9 +1344,9 @@ static void emit_builtin_parse_args_w(CodeGen *codegen) {
 
     TAB; T("xor rcx, rcx"); NL;
 
-    T("__pargsw_outer:\n");
+    T("__pargsw_loop:\n");
     TAB; T("cmp rcx, [rbp-32]"); NL;
-    TAB; T("jge __pargsw_outer_done"); NL;
+    TAB; T("jge __pargsw_done"); NL;
 
     TAB; T("mov rax, [rbp-24]"); NL;
     TAB; T("mov rsi, [rax + rcx*8]"); NL;
@@ -1402,18 +1366,60 @@ static void emit_builtin_parse_args_w(CodeGen *codegen) {
     TAB; T("mov [rbp-48], rdi"); NL;
 
     TAB; T("inc rcx"); NL;
-    TAB; T("jmp __pargsw_outer"); NL;
+    TAB; T("jmp __pargsw_loop"); NL;
 
-    T("__pargsw_outer_done:\n");
+    T("__pargsw_done:\n");
     TAB; T("mov rcx, [rbp-24]"); NL;
     TAB; T("sub rsp, 32"); NL;
     TAB; T("call [rel __imp_LocalFree]"); NL;
     TAB; T("add rsp, 32"); NL;
 
     TAB; T("mov rax, [rbp-32]"); NL;
-    TAB; T("mov rsp, rbp"); NL;
-    TAB; T("pop rbp"); NL;
-    TAB; T("ret"); NL;
+
+    EPILOG;
+}
+
+static void emit_builtin_write_stdout_w(CodeGen *codegen) {
+    PROLOG("__write_stdout_w", 48);
+
+    SAVE_PARAM_RCX(8);
+    SAVE_PARAM_RDX(16);
+
+    TAB; T("mov rcx, 0xFFFFFFFFFFFFFFF5"); NL;
+    TAB; T("call [rel __imp_GetStdHandle]"); NL;
+    TAB; T("mov [rbp-24], rax"); NL;
+
+    TAB; T("mov rcx, rax"); NL;
+    TAB; T("call [rel __imp_GetFileType]"); NL;
+
+    TAB; T("cmp eax, 0x0002"); NL;
+    TAB; T("je __wsw_console"); NL;
+
+    T("__wsw_file:\n");
+    TAB; T("mov qword [rbp-32], 0"); NL;
+    TAB; T("lea r9, [rbp-32]"); NL;
+    TAB; T("mov rcx, [rbp-24]"); NL;
+    TAB; T("mov rdx, [rbp-8]"); NL;
+    TAB; T("mov r8d, dword [rbp-16]"); NL;
+    TAB; T("mov qword [rsp+32], 0"); NL;
+
+    TAB; T("call [rel __imp_WriteFile]"); NL;
+    TAB; T("jmp __wsw_done"); NL;
+
+    T("__wsw_console:\n");
+    TAB; T("mov rax, [rbp-16]"); NL;
+    TAB; T("shr rax, 1"); NL;
+    TAB; T("mov r8, rax"); NL;
+    TAB; T("mov qword [rbp-40], 0"); NL;
+    TAB; T("lea r9, [rbp-40]"); NL;
+    TAB; T("mov rcx, [rbp-24]"); NL;
+    TAB; T("mov rdx, [rbp-8]"); NL;
+    TAB; T("mov qword [rsp+32], 0"); NL;
+
+    TAB; T("call [rel __imp_WriteConsoleW]"); NL;
+
+    T("__wsw_done:\n");
+    EPILOG;
 }
 
 static void emit_builtin_entry(CodeGen *codegen) {
@@ -1424,7 +1430,7 @@ static void emit_builtin_entry(CodeGen *codegen) {
     TAB; T("sub rsp, 48"); NL;
 
     TAB; T("xor rcx, rcx"); NL;
-    TAB; T("mov rdx, 1024"); NL;
+    TAB; T("mov rdx, 2048"); NL;
     TAB; T("mov r8, 0x3000"); NL;
     TAB; T("mov r9, 0x04"); NL;
     TAB; T("sub rsp, 32"); NL;
@@ -1456,7 +1462,11 @@ static void emit_header(CodeGen *codegen) {
 
     T("extern __imp_ExitProcess\n");
     T("extern __imp_WriteFile\n");
+    T("extern __imp_ReadFile\n");
     T("extern __imp_GetStdHandle\n");
+    T("extern __imp_CreateFileA\n");
+    T("extern __imp_CreateFileW\n");
+    T("extern __imp_CloseHandle\n");
     T("extern __imp_VirtualAlloc\n");
     T("extern __imp_VirtualFree\n");
     T("extern __imp_GetCommandLineA\n");
@@ -1465,23 +1475,16 @@ static void emit_header(CodeGen *codegen) {
     T("extern __imp_WriteConsoleW\n");
     T("extern __imp_GetFileType\n");
     T("extern __imp_LocalFree\n");
-    T("extern __imp_CreateFileA\n");
-    T("extern __imp_CreateFileW\n");
-    T("extern __imp_ReadFile\n");
-    T("extern __imp_CloseHandle\n");
     T("\n");
 
     T("global __entry\n\n");
 }
 
 static void emit_builtin_open_file(CodeGen *codegen) {
-    T("\n__open_file:\n");
-    TAB; T("push rbp"); NL;
-    TAB; T("mov rbp, rsp"); NL;
-    TAB; T("sub rsp, 48"); NL;
+    PROLOG("__open_file", 32);
 
-    TAB; T("mov [rbp-8], rcx"); NL;
-    TAB; T("mov [rbp-16], rdx"); NL;
+    SAVE_PARAM_RCX(8);
+    SAVE_PARAM_RDX(16);
 
     TAB; T("mov rax, [rbp-16]"); NL;
     TAB; T("cmp rax, 0"); NL;
@@ -1490,26 +1493,26 @@ static void emit_builtin_open_file(CodeGen *codegen) {
     TAB; T("je __of_mode_w"); NL;
     TAB; T("cmp rax, 2"); NL;
     TAB; T("je __of_mode_a"); NL;
-    TAB; T("jmp __of_mode_wc"); NL;
+    TAB; T("jmp __of_mode_create"); NL;
 
     T("__of_mode_r:\n");
     TAB; T("mov dword [rbp-24], 0x80000000"); NL;
-    TAB; T("mov dword [rbp-32], 3"); NL;
+    TAB; T("mov dword [rbp-28], 3"); NL;
     TAB; T("jmp __of_dispatch"); NL;
 
     T("__of_mode_w:\n");
     TAB; T("mov dword [rbp-24], 0x40000000"); NL;
-    TAB; T("mov dword [rbp-32], 5"); NL;
+    TAB; T("mov dword [rbp-28], 5"); NL;
     TAB; T("jmp __of_dispatch"); NL;
 
     T("__of_mode_a:\n");
     TAB; T("mov dword [rbp-24], 0x40000000"); NL;
-    TAB; T("mov dword [rbp-32], 4"); NL;
+    TAB; T("mov dword [rbp-28], 4"); NL;
     TAB; T("jmp __of_dispatch"); NL;
 
-    T("__of_mode_wc:\n");
+    T("__of_mode_create:\n");
     TAB; T("mov dword [rbp-24], 0x40000000"); NL;
-    TAB; T("mov dword [rbp-32], 2"); NL;
+    TAB; T("mov dword [rbp-28], 2"); NL;
 
     T("__of_dispatch:\n");
     TAB; T("sub rsp, 56"); NL;
@@ -1517,10 +1520,11 @@ static void emit_builtin_open_file(CodeGen *codegen) {
     TAB; T("mov edx, dword [rbp-24]"); NL;
     TAB; T("xor r8, r8"); NL;
     TAB; T("xor r9, r9"); NL;
-    TAB; T("mov eax, dword [rbp-32]"); NL;
+    TAB; T("mov eax, dword [rbp-28]"); NL;
     TAB; T("mov dword [rsp+32], eax"); NL;
     TAB; T("mov dword [rsp+40], 0x80"); NL;
     TAB; T("mov dword [rsp+48], 0"); NL;
+
     TAB; T("call [rel __imp_CreateFileA]"); NL;
     TAB; T("add rsp, 56"); NL;
 
@@ -1529,19 +1533,14 @@ static void emit_builtin_open_file(CodeGen *codegen) {
     TAB; T("xor rax, rax"); NL;
 
     T("__of_ok:\n");
-    TAB; T("mov rsp, rbp"); NL;
-    TAB; T("pop rbp"); NL;
-    TAB; T("ret"); NL;
+    EPILOG;
 }
 
 static void emit_builtin_open_file_w(CodeGen *codegen) {
-    T("\n__open_file_w:\n");
-    TAB; T("push rbp"); NL;
-    TAB; T("mov rbp, rsp"); NL;
-    TAB; T("sub rsp, 48"); NL;
-
-    TAB; T("mov [rbp-8], rcx"); NL;
-    TAB; T("mov [rbp-16], rdx"); NL;
+    PROLOG("__open_file_w", 32);
+    
+    SAVE_PARAM_RCX(8);
+    SAVE_PARAM_RDX(16);
 
     TAB; T("mov rax, [rbp-16]"); NL;
     TAB; T("cmp rax, 0"); NL;
@@ -1550,26 +1549,26 @@ static void emit_builtin_open_file_w(CodeGen *codegen) {
     TAB; T("je __ofw_mode_w"); NL;
     TAB; T("cmp rax, 2"); NL;
     TAB; T("je __ofw_mode_a"); NL;
-    TAB; T("jmp __ofw_mode_wc"); NL;
+    TAB; T("jmp __ofw_mode_create"); NL;
 
     T("__ofw_mode_r:\n");
     TAB; T("mov dword [rbp-24], 0x80000000"); NL;
-    TAB; T("mov dword [rbp-32], 3"); NL;
+    TAB; T("mov dword [rbp-28], 3"); NL;
     TAB; T("jmp __ofw_dispatch"); NL;
 
     T("__ofw_mode_w:\n");
     TAB; T("mov dword [rbp-24], 0x40000000"); NL;
-    TAB; T("mov dword [rbp-32], 5"); NL;
+    TAB; T("mov dword [rbp-28], 5"); NL;
     TAB; T("jmp __ofw_dispatch"); NL;
 
     T("__ofw_mode_a:\n");
     TAB; T("mov dword [rbp-24], 0x40000000"); NL;
-    TAB; T("mov dword [rbp-32], 4"); NL;
+    TAB; T("mov dword [rbp-28], 4"); NL;
     TAB; T("jmp __ofw_dispatch"); NL;
 
-    T("__ofw_mode_wc:\n");
+    T("__ofw_mode_create:\n");
     TAB; T("mov dword [rbp-24], 0x40000000"); NL;
-    TAB; T("mov dword [rbp-32], 2"); NL;
+    TAB; T("mov dword [rbp-28], 2"); NL;
 
     T("__ofw_dispatch:\n");
     TAB; T("sub rsp, 56"); NL;
@@ -1577,10 +1576,11 @@ static void emit_builtin_open_file_w(CodeGen *codegen) {
     TAB; T("mov edx, dword [rbp-24]"); NL;
     TAB; T("xor r8, r8"); NL;
     TAB; T("xor r9, r9"); NL;
-    TAB; T("mov eax, dword [rbp-32]"); NL;
+    TAB; T("mov eax, dword [rbp-28]"); NL;
     TAB; T("mov dword [rsp+32], eax"); NL;
     TAB; T("mov dword [rsp+40], 0x80"); NL;
     TAB; T("mov dword [rsp+48], 0"); NL;
+
     TAB; T("call [rel __imp_CreateFileW]"); NL;
     TAB; T("add rsp, 56"); NL;
 
@@ -1589,78 +1589,60 @@ static void emit_builtin_open_file_w(CodeGen *codegen) {
     TAB; T("xor rax, rax"); NL;
 
     T("__ofw_ok:\n");
-    TAB; T("mov rsp, rbp"); NL;
-    TAB; T("pop rbp"); NL;
-    TAB; T("ret"); NL;
+    EPILOG;
 }
 
 static void emit_builtin_read_file(CodeGen *codegen) {
-    T("\n__read_file:\n");
-    TAB; T("push rbp"); NL;
-    TAB; T("mov rbp, rsp"); NL;
-    TAB; T("sub rsp, 48"); NL;
+    PROLOG("__read_file", 32);
 
-    TAB; T("mov [rbp-8], rcx"); NL;
-    TAB; T("mov [rbp-16], rdx"); NL;
-    TAB; T("mov [rbp-24], r8"); NL;
+    SAVE_PARAM_RCX(8);
+    SAVE_PARAM_RDX(16);
+    SAVE_PARAM_R8(24);
 
-    TAB; T("sub rsp, 32"); NL;
+    TAB; T("mov qword [rbp-32], 0"); NL;
     TAB; T("lea r9, [rbp-32]"); NL;
+
     TAB; T("mov rcx, [rbp-8]"); NL;
     TAB; T("mov rdx, [rbp-16]"); NL;
     TAB; T("mov r8d, dword [rbp-24]"); NL;
     TAB; T("mov qword [rsp+32], 0"); NL;
+
     TAB; T("call [rel __imp_ReadFile]"); NL;
-    TAB; T("add rsp, 32"); NL;
+    TAB; T("mov rax, [rbp-32]"); NL;
 
-    TAB; T("mov eax, dword [rbp-32]"); NL;
-
-    TAB; T("mov rsp, rbp"); NL;
-    TAB; T("pop rbp"); NL;
-    TAB; T("ret"); NL;
+    EPILOG;
 }
 
 static void emit_builtin_write_file(CodeGen *codegen) {
-    T("\n__write_file:\n");
-    TAB; T("push rbp"); NL;
-    TAB; T("mov rbp, rsp"); NL;
-    TAB; T("sub rsp, 48"); NL;
+    PROLOG("__write_file", 32);
 
-    TAB; T("mov [rbp-8], rcx"); NL;
-    TAB; T("mov [rbp-16], rdx"); NL;
-    TAB; T("mov [rbp-24], r8"); NL;
+    SAVE_PARAM_RCX(8);
+    SAVE_PARAM_RDX(16);
+    SAVE_PARAM_R8(24);
 
     TAB; T("mov qword [rbp-32], 0"); NL;
-
-    TAB; T("sub rsp, 32"); NL;
     TAB; T("lea r9, [rbp-32]"); NL;
+
     TAB; T("mov rcx, [rbp-8]"); NL;
     TAB; T("mov rdx, [rbp-16]"); NL;
-    TAB; T("mov r8d, qword [rbp-24]"); NL;
-    TAB; T("mov qword [rbp+32], 0"); NL;
-    TAB; T("call [rell __imp_WriteFile]"); NL;
-    TAB; T("add rsp, 32"); NL;
+    TAB; T("mov r8d, dword [rbp-24]"); NL;
+    TAB; T("mov qword [rsp+32], 0"); NL;
 
-    TAB; T("mov eax, dword [rbp-32]"); NL;
+    TAB; T("call [rel __imp_WriteFile]"); NL;
+    TAB; T("mov rax, [rbp-32]"); NL;
 
-    TAB; T("mov rsp, rbp"); NL;
-    TAB; T("pop rbp"); NL;
-    TAB; T("ret"); NL;
+    EPILOG;
 }
 
 static void emit_builtin_close_file(CodeGen *codegen) {
-    T("\n__close_file:\n");
-    TAB; T("push rbp"); NL;
-    TAB; T("mov rbp, rsp"); NL;
-    TAB; T("sub rsp, 32"); NL;
+    PROLOG("__close_file", 16);
+    
+    SAVE_PARAM_RCX(8);
 
     TAB; T("call [rel __imp_CloseHandle]"); NL;
 
-    TAB; T("mov rsp, rbp"); NL;
-    TAB; T("pop rbp"); NL;
-    TAB; T("ret"); NL;
+    EPILOG;
 }
-
 void codegen_init(CodeGen *codegen, Arena *arena, SymbolTable *table) {
     codegen->arena         = arena;
     codegen->table         = table;
@@ -1685,20 +1667,20 @@ void codegen_program(CodeGen *codegen, Node *program) {
     emit_header(codegen);
     T("section .text\n\n");
 
-    emit_builtin_write(codegen);
-    emit_builtin_write_int(codegen);
-    emit_builtin_write_w(codegen);
+    emit_builtin_write_stdout(codegen);
+    emit_builtin_write_file(codegen);
     emit_builtin_read_file(codegen);
     emit_builtin_close_file(codegen);
-    emit_builtin_write_file(codegen);
-    emit_builtin_open_file(codegen);
-    emit_builtin_open_file_w(codegen);
-    emit_builtin_exit(codegen);
-    emit_builtin_int_to_str(codegen);
+    emit_builtin_write_int(codegen);
+    emit_builtin_write_stdout_w(codegen);
     emit_builtin_malloc(codegen);
     emit_builtin_free(codegen);
     emit_builtin_parse_args(codegen);
     emit_builtin_parse_args_w(codegen);
+    emit_builtin_open_file(codegen);
+    emit_builtin_open_file_w(codegen);
+    emit_builtin_exit(codegen);
+    emit_builtin_int_to_str(codegen);
     emit_builtin_entry(codegen);
     emit_bss_builtins(codegen);
 

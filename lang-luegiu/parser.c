@@ -5,6 +5,7 @@ static Node* parse_block(Parser *parser);
 static Node* parse_decl(Parser* parser);
 static Node* parse_statement(Parser *parser);
 static Node* parse_struct_stmt(Parser *parser);
+static Node* parse_unary(Parser *parser);
 
 static NodeList* list_create(Arena *arena) {
     NodeList* list = (NodeList*)arena_alloc(arena, sizeof(NodeList));
@@ -180,6 +181,67 @@ static double to_double(Parser *parser, View string) {
     return result;
 }
 
+static bool peek_iscast(Parser *parser) {
+    if(peek(parser).type != TOKEN_LPAREN) return false;
+
+    Lexer save_lexer = *parser->lexer;
+    Token save_current = parser->current;
+    Token save_prev = parser->prev;
+
+    advance(parser);
+    bool result = is_type(parser, peek(parser));
+
+    *parser->lexer = save_lexer;
+    parser->current = save_current;
+    parser->prev = save_prev;
+
+    return result;
+}
+
+static Node* parse_cast(Parser *parser) {
+    Token start_paren = peek(parser);
+
+    expected(parser, TOKEN_LPAREN, "Esperado '(' para cast");
+
+    Token type = peek(parser);
+    advance(parser);
+
+    View name = { 0 };
+
+    if(type.type == TOKEN_KEYWORD_STRUCT || type.type == TOKEN_KEYWORD_UNION) {
+        expected(parser, TOKEN_IDENTIFIER, "Esperado nome da struct/union no cast");
+        name = parser->prev.view;
+    } else if(type.type == TOKEN_IDENTIFIER) {
+        Symbol* sym = lookup_table(parser->table, type.view);
+        if(sym && sym->category == SYMBOL_TYPEDEF) {
+            name = type.view;
+            type.type = sym->type;
+        }
+    }
+
+    if(type.type == TOKEN_KEYWORD_LINK) {
+        diag_fatal(parser->diag, parser->lexer->file_name,
+            (size_t)parser->lexer->line, (size_t)parser->lexer->col,
+            "cast para 'link' nao e permitido - 'link' so pode vir de "
+            "literal hexadecimal ou de outro 'link'");
+    }
+
+    size_t ptr_lvl = 0;
+    while(match(parser, TOKEN_OP_STAR)) ptr_lvl++;
+
+    expected(parser, TOKEN_RPAREN, "Esperado ')' apos tipo do cast");
+
+    Node* operand = parse_unary(parser);
+
+    Node* node = create_node_at(parser, NODE_CAST, start_paren);
+    node->ast.cast_expr.ptr_lvl = ptr_lvl;
+    node->ast.cast_expr.target = type.type;
+    node->ast.cast_expr.typename = name;
+    node->ast.cast_expr.expr = operand;
+
+    return node;
+}
+
 static Node* parse_primary(Parser *parser) {
     if(match(parser, TOKEN_INT_LIT)) {
         Node* node = create_node_at(parser, NODE_INT_LIT, parser->prev);
@@ -287,6 +349,10 @@ static Node* parse_postfix(Parser *parser) {
 }
 
 static Node* parse_unary(Parser *parser) {
+    if(peek_iscast(parser)) {
+        return parse_cast(parser);
+    }
+
     if (match(parser, TOKEN_OP_MINUS) || 
         match(parser, TOKEN_OP_BANG)   || 
         match(parser, TOKEN_OP_PLUS_PLUS)   || 
@@ -831,52 +897,180 @@ static Node* parse_enum_stmt(Parser *parser) {
     return node;
 }
 
-static Node* parse_typedefinition(Parser *parser) {
-    expected(parser, TOKEN_KEYWORD_TYPEDEFINITION, "Esperado 'typedefinition'");
+static Node* parse_typedefinition_struct(Parser *parser) {
+    expected(parser, TOKEN_KEYWORD_STRUCT, "Esperado 'struct'");
 
     Node* node = create_node(parser, NODE_TYPEDEF_DECL);
-    TokenType typedefined_token = TOKEN_UNDEFINED;
+    node->ast.typedef_decl.type = STRUCT;
 
-    if(peek(parser).type == TOKEN_KEYWORD_STRUCT) {
-        node->ast.typedef_decl.type = STRUCT;
-        node->ast.typedef_decl.struct_node = parse_struct(parser, true);
-        typedefined_token = TOKEN_KEYWORD_STRUCT;
-    } else if(peek(parser).type == TOKEN_KEYWORD_ENUM) {
-        node->ast.typedef_decl.type = ENUM;
-        node->ast.typedef_decl.enum_node = parse_enum(parser);
-        typedefined_token = TOKEN_KEYWORD_ENUM;
-    } else if(peek(parser).type == TOKEN_KEYWORD_UNION) {
-        node->ast.typedef_decl.type = UNION;
-        node->ast.typedef_decl.enum_node = parse_union(parser, true);
-        typedefined_token = TOKEN_KEYWORD_UNION;
-    } else {
-        node->ast.typedef_decl.type = PRIMITIVE;
-        if(peek(parser).type >= TOKEN_KEYWORD_INT && peek(parser).type <= TOKEN_KEYWORD_BIG) {
-            node->ast.typedef_decl.primitive = peek(parser);
-            typedefined_token = peek(parser).type;
-            advance(parser);
+    Node* struct_node = create_node(parser, NODE_STRUCT);
+    struct_node->ast.struct_decl.fields = list_create(parser->arena);
+
+    if(peek(parser).type == TOKEN_IDENTIFIER) {
+        struct_node->ast.struct_decl.name = peek(parser).view;
+        advance(parser);
+    }
+
+    expected(parser, TOKEN_LBRACE, "Esperado '{'");
+
+    do {
+        if (peek(parser).type == TOKEN_RBRACE) break;
+        if (peek(parser).type == TOKEN_KEYWORD_UNION || peek(parser).type == TOKEN_KEYWORD_STRUCT) {
+            bool is_union = (peek(parser).type == TOKEN_KEYWORD_UNION);
+            Node* inner = is_union ? parse_union(parser, true) : parse_struct(parser, true);
+
+            if (peek(parser).type == TOKEN_IDENTIFIER) {
+                inner->ast.struct_decl.name = parser->current.view;
+                advance(parser);
+            }
+
+            list_push(parser->arena, struct_node->ast.struct_decl.fields, inner);
+            continue;
         }
-        else {
-            diag_error(parser->diag, parser->lexer->file_name,
+
+        if (!is_type(parser, peek(parser))) {
+            diag_fatal(parser->diag, parser->lexer->file_name,
                 (size_t)parser->lexer->line, (size_t)parser->lexer->col,
-                "esperado tipo primitivo ou struct");
+                "esperado tipo no campo da struct");
+        }
+
+        Token field_type = peek(parser);
+        advance(parser);
+
+        if (field_type.type == TOKEN_IDENTIFIER) {
+            Symbol* sym = lookup_table(parser->table, field_type.view);
+            if (sym && sym->category == SYMBOL_TYPEDEF)
+                field_type.type = sym->type;
+        }
+
+        size_t ptr_lvl = 0;
+        while (match(parser, TOKEN_OP_STAR)) ptr_lvl++;
+
+        do {
+            expected(parser, TOKEN_IDENTIFIER, "Esperado nome do campo da struct");
+
+            Node* field = create_node(parser, NODE_VAR_DECL);
+            field->ast.var_decl.data_type = field_type.type;
+            field->ast.var_decl.init = NULL;
+            field->ast.var_decl.pointer_lvl = ptr_lvl;
+            field->ast.var_decl.name = parser->prev.view;
+
+            list_push(parser->arena, struct_node->ast.struct_decl.fields, field);
+        } while (match(parser, TOKEN_COMMA));
+    } while (match(parser, TOKEN_SEMICOLON));
+
+    expected(parser, TOKEN_RBRACE, "Esperado '}'");
+
+    expected(parser, TOKEN_IDENTIFIER, "Esperado nome do typedefinition");
+    View typedef_name = parser->prev.view;
+
+    expected(parser, TOKEN_SEMICOLON, "Esperado ';' apos nome do typedefinition");
+
+    node->ast.typedef_decl.struct_node = struct_node;
+    node->ast.typedef_decl.name = typedef_name;
+
+    return node;
+}
+
+static Node* parse_typedefinition_enum(Parser *parser) {
+    Node* enum_node = parse_enum(parser);
+    Node* node = create_node(parser, NODE_TYPEDEF_DECL);
+    node->ast.typedef_decl.type = ENUM;
+
+    expected(parser, TOKEN_IDENTIFIER, "Esperado nome do typedefinition");
+    View typedef_name = parser->prev.view;
+
+    expected(parser, TOKEN_SEMICOLON, "Esperado ';' apos nome do typedefinition");
+
+    node->ast.typedef_decl.enum_node = enum_node;
+    node->ast.typedef_decl.name = typedef_name;
+
+    return node;
+}
+
+static Node* parse_typedefinition_union(Parser *parser) {
+    Node* union_node = parse_union(parser, true);
+    Node* node = create_node(parser, NODE_TYPEDEF_DECL);
+
+    node->ast.typedef_decl.type = UNION;
+
+    expected(parser, TOKEN_IDENTIFIER, "Esperado nome do typedefinition");
+    View typedef_name = parser->prev.view;
+
+    expected(parser, TOKEN_SEMICOLON, "Esperado ';' apos nome do typedefinition");
+
+    node->ast.typedef_decl.struct_node = union_node;
+    node->ast.typedef_decl.name = typedef_name;
+
+    return node;
+}
+
+static Node* parse_typedefinition_primitive(Parser *parser) {
+    if(!is_type(parser, peek(parser))) {
+        diag_fatal(parser->diag, parser->lexer->file_name,
+            (size_t)parser->lexer->line, (size_t)parser->lexer->col,
+            "esperado tipo apos 'typedefinition'");
+    }
+
+    Token base = peek(parser);
+    advance(parser);
+
+    size_t ptr_lvl = 0;
+    if(base.type == TOKEN_IDENTIFIER) {
+        Symbol* sym = lookup_table(parser->table, base.view);
+        if(sym && sym->category == SYMBOL_TYPEDEF) {
+            base.type = sym->type;
+            ptr_lvl = sym->pointer_lvl;
+        } else {
+            diag_fatal(parser->diag, parser->lexer->file_name,
+                (size_t)parser->lexer->line, (size_t)parser->lexer->col,
+                "'%.*s' nao e um tipo conhecido",
+                (int)base.view.len, base.view.start);
         }
     }
 
-    expected(parser, TOKEN_IDENTIFIER, "Esperado identificador apos a expressao");
-    View name = parser->prev.view;
-    expected(parser, TOKEN_SEMICOLON, "Esperado ';' apos o identificador");
-    node->ast.typedef_decl.name = name;
+    size_t ptr = ptr_lvl;
+    while(match(parser, TOKEN_OP_STAR)) ptr++;
 
-    if(lookup_table(parser->table, name)){
-        diag_error(parser->diag, parser->prev.file_name,
-            (size_t)parser->prev.line, (size_t)parser->prev.col,
-            "'%.*s' ja foi declarado", (int)name.len, name.start);
-    } else {
-        insert_table(parser->table, name, SYMBOL_TYPEDEF, 0, typedefined_token);
-    } 
+    expected(parser, TOKEN_IDENTIFIER, "Esperado nome do typedefinition");
+    View typedef_name = parser->prev.view;
+
+    expected(parser, TOKEN_SEMICOLON, "Esperado ';' apos nome do typedefinition");
+
+    Node* node = create_node(parser, NODE_TYPEDEF_DECL);
+    node->ast.typedef_decl.type = PRIMITIVE;
+    node->ast.typedef_decl.name = typedef_name;
+    node->ast.typedef_decl.primitive = base;
+    node->ast.typedef_decl.primitive_ptr_lvl = ptr;
 
     return node;
+}
+
+static Node* parse_typedefinition(Parser *parser) {
+    expected(parser, TOKEN_KEYWORD_TYPEDEFINITION, "Esperado 'typedefinition'");
+
+    Token next = peek(parser);
+
+    if(next.type == TOKEN_KEYWORD_STRUCT) {
+        return parse_typedefinition_struct(parser);
+    }
+    
+    if(next.type == TOKEN_KEYWORD_ENUM) {
+        return parse_typedefinition_enum(parser);
+    }
+
+    if(next.type == TOKEN_KEYWORD_UNION) {
+        return parse_typedefinition_union(parser);
+    }
+
+    if(is_type(parser, next)) {
+        return parse_typedefinition_primitive(parser);
+    }
+
+    diag_fatal(parser->diag, parser->lexer->file_name,
+        (size_t)parser->lexer->line, (size_t)parser->lexer->col,
+        "Esperado tipo após 'typedefinition'");
+    return NULL;
 }
 
 static Node* parse_if(Parser *parser) {

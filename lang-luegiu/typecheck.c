@@ -35,7 +35,7 @@ const char* token_to_str(TokenType type) {
         case TOKEN_KEYWORD_UTF8CHAR: return "utf8";
         case TOKEN_KEYWORD_UTF16CHAR: return "utf16";
         case TOKEN_KEYWORD_SMALL: return "small";
-        case TOKEN_KEYWORKD_LINK: return "link";
+        case TOKEN_KEYWORD_LINK: return "link";
         case TOKEN_KEYWORD_BIG: return "big";
         case TOKEN_KEYWORD_RETURN: return "return";
         case TOKEN_KEYWORD_STATIC: return "static";
@@ -108,6 +108,16 @@ static bool view_equals(View a, View b) {
     return memcmp(a.start, b.start, a.len) == 0;
 }
 
+static bool is_lvalue(Node *node) {
+    if(!node) return false;
+    if(node->type == NODE_VAR_ACCESS) return true;
+    if(node->type == NODE_UNARY_OP && node->ast.unary_op.op == TOKEN_OP_STAR) return true;
+    if(node->type == NODE_BINARY_OP &&
+        (node->ast.binary_op.op == TOKEN_DOT || node->ast.binary_op.op == TOKEN_OP_ARROW))
+        return true;
+    if(node->type == NODE_ARRAY) return true;
+    return false;
+}
 void push_scope(SymbolTable *table) {
     Scope* scope = (Scope*)arena_alloc(table->arena, sizeof(Scope));
     scope->symbols = NULL;
@@ -173,6 +183,20 @@ static void typecheck_error_at(TypeChecker *typecheck, Node *node, const char* f
     va_start(args, fmt);
 
     char buf[512];
+
+    if(node && node->type == NODE_VAR_ACCESS) {
+        size_t len = node->ast.var_access.name.len;
+        const char* start = node->ast.var_access.name.start;
+        if(len > 256 || start == NULL) {
+            fprintf(stderr, "NODE CORROMPIDO: type=%d len=%zu start=%p line=%d col=%d file=%s\n",
+                node->type, len, (void*)start, node->line, node->col,
+                node->file ? node->file : "<null>");
+            va_end(args);
+            typecheck->error_count++;
+            return;
+        }
+    }
+
     vsnprintf(buf, sizeof(buf), fmt, args);
     va_end(args);
 
@@ -249,7 +273,7 @@ static bool type_compatible(TokenType decl, size_t decl_ptr, TokenType actual, s
         return true;
 
     if (actual == TOKEN_HEXA) {
-        if (decl == TOKEN_KEYWORKD_LINK) return true;
+        if (decl == TOKEN_KEYWORD_LINK) return true;
         if (is_integer_type(decl))            return true;
         return false;
     }
@@ -270,8 +294,8 @@ static bool type_compatible(TokenType decl, size_t decl_ptr, TokenType actual, s
         return (decl == TOKEN_KEYWORD_CHAR || decl == TOKEN_KEYWORD_UTF16CHAR || decl == TOKEN_KEYWORD_UTF8CHAR);
     }
 
-    if (decl == TOKEN_KEYWORKD_LINK)
-        return (actual == TOKEN_KEYWORKD_LINK);
+    if (decl == TOKEN_KEYWORD_LINK)
+        return (actual == TOKEN_KEYWORD_LINK);
 
     return false;
 }
@@ -297,6 +321,8 @@ static size_t infer_ptr_lvl(SymbolTable *table, Node *expr) {
         }
         return 0;
     }
+    case NODE_CAST:
+        return expr->ast.cast_expr.ptr_lvl;
     case NODE_BINARY_OP:
         return 0;
     case NODE_STRING_LIT:
@@ -368,7 +394,47 @@ static TokenType infer_type(TypeChecker *typecheck, SymbolTable *table, Node *ex
         return sym->type;
     }
     case NODE_UNARY_OP:
-    case NODE_POSTFIX_OP: return infer_type(typecheck, table, expr->ast.unary_op.operand);
+    case NODE_POSTFIX_OP: 
+        return infer_type(typecheck, table, expr->ast.unary_op.operand);
+    case NODE_CAST: {
+        TokenType target = expr->ast.cast_expr.target;
+        size_t ptr_lvl = expr->ast.cast_expr.ptr_lvl;
+
+        TokenType source = infer_type(typecheck, table, expr->ast.cast_expr.expr);
+        size_t source_ptr = infer_ptr_lvl(table, expr->ast.cast_expr.expr);
+
+        if(target == TOKEN_KEYWORD_LINK) {
+            typecheck_error_at(typecheck, expr,
+                "cast para 'link' nao e permitido - 'link' so pode vir de "
+                "literal hexadecimal ou de outro 'link'");
+            return TOKEN_UNDEFINED;
+        }
+
+        if(source == TOKEN_KEYWORD_LINK) {
+            return target;
+        }
+
+        bool target_is_aggregate = (target == TOKEN_KEYWORD_STRUCT || target == TOKEN_KEYWORD_UNION);
+        bool source_is_aggregate = (target == TOKEN_KEYWORD_STRUCT || target == TOKEN_KEYWORD_UNION);
+
+        if(target_is_aggregate && ptr_lvl == 0) {
+            typecheck_error_at(typecheck, expr,
+                "cast invalido: nao e possivel fazer cast para '%s' por valor "
+                "(apenas ponteiro para struct/union pode ter cast)",
+                token_to_str(target));
+            return TOKEN_UNDEFINED;
+        }
+
+        if(source_is_aggregate && source_ptr == 0) {
+            typecheck_error_at(typecheck, expr,
+                "cast invalido: nao e possivel fazer cast de '%s' por valor "
+                "(apenas ponteiro para struct/union pode ter cast)",
+                token_to_str(source));
+            return TOKEN_UNDEFINED;
+        }
+
+        return target;
+    }
     case NODE_BINARY_OP: {
         TokenType op = expr->ast.binary_op.op;
 
@@ -420,7 +486,7 @@ static TokenType infer_type(TypeChecker *typecheck, SymbolTable *table, Node *ex
             Node* lhs = expr->ast.binary_op.left;
             Node* rhs = expr->ast.binary_op.right;
 
-            if(lhs->type != NODE_VAR_ACCESS) {
+            if(!is_lvalue(lhs)) {
                 typecheck_error_at(typecheck, expr, "lado esquerdo de '=' nao e um lvalue valido");
                 return TOKEN_UNDEFINED;
             }
@@ -462,7 +528,7 @@ static TokenType infer_type(TypeChecker *typecheck, SymbolTable *table, Node *ex
             Node* lhs = expr->ast.binary_op.left;
             Node* rhs = expr->ast.binary_op.right;
 
-            if(lhs->type != NODE_VAR_ACCESS) {
+            if(!is_lvalue(lhs)) {
                 typecheck_error_at(typecheck, expr, "lado esquerdo de '%s' nao e um lvalue valido",
                     token_to_str(op));
                 return TOKEN_UNDEFINED;
@@ -543,7 +609,7 @@ static void check_condition(TypeChecker *typechecker, SymbolTable *table, Node *
 
     if(type == TOKEN_UNDEFINED) return;
 
-    if(type == TOKEN_KEYWORKD_LINK && ptr_lvl == 0) {
+    if(type == TOKEN_KEYWORD_LINK && ptr_lvl == 0) {
         typecheck_error_at(typechecker, condition, "'%s': 'link' nunca e NULL, use 'link*' para verificar nulidade", context);
         return;
     }
@@ -611,7 +677,7 @@ static void check_func_decl(TypeChecker *typechecker, SymbolTable *table, Node *
     
     if(is_entry) {
         bool valid = (return_type == TOKEN_KEYWORD_VOID && pointer_lvl == 0) ||
-                    (return_type == TOKEN_KEYWORKD_LINK && pointer_lvl == 0);
+                    (return_type == TOKEN_KEYWORD_LINK && pointer_lvl == 0);
         if(!valid) {
             typecheck_error_at(typechecker, node,
                 "'start' so pode retornar 'void' ou 'link', recebeu '%s'",
@@ -781,7 +847,34 @@ static void check_node(TypeChecker *typechecker, SymbolTable *table, Node *node)
             }
             break;
         }
-        case NODE_TYPEDEF_DECL:
+        case NODE_TYPEDEF_DECL: {
+            View alias = current->ast.typedef_decl.name;
+
+            if(lookup_current_table(table, alias)) {
+                typecheck_error_at(typechecker, current,
+                    "'%.*s' ja foi declarado nesse escopo",
+                    (int)alias.len, alias.start);
+                break;
+            }
+
+            switch (current->ast.typedef_decl.type)
+            {
+            case STRUCT:
+            case UNION: 
+                check_node(typechecker, table, current->ast.typedef_decl.struct_node);
+                insert_table(table, alias, SYMBOL_TYPEDEF, 0, current->ast.typedef_decl.type == STRUCT ? TOKEN_KEYWORD_STRUCT : TOKEN_KEYWORD_UNION);
+                break;
+            case ENUM: 
+                check_node(typechecker, table, current->ast.typedef_decl.enum_node);
+                insert_table(table, alias, SYMBOL_TYPEDEF, 0, TOKEN_KEYWORD_ENUM);
+                break;
+            case PRIMITIVE:
+                insert_table(table, alias, SYMBOL_TYPEDEF, 0, current->ast.typedef_decl.primitive.type);
+                break;
+            default:
+                break;
+            }
+        }
         case NODE_UNION:
             break;
         case NODE_VAR_DECL: {
@@ -877,9 +970,9 @@ static void check_node(TypeChecker *typechecker, SymbolTable *table, Node *node)
                 break;
             }
 
-            if(typechecker->current_return_type == TOKEN_KEYWORKD_LINK) {
+            if(typechecker->current_return_type == TOKEN_KEYWORD_LINK) {
                 TokenType actual = infer_type(typechecker, table, val);
-                if (actual != TOKEN_HEXA && actual != TOKEN_KEYWORKD_LINK) {
+                if (actual != TOKEN_HEXA && actual != TOKEN_KEYWORD_LINK) {
                     typecheck_error_at(typechecker, current,
                         "funcao 'link' so pode retornar literais hexadecimais ou outro link"
                         " (ex: 0x1A2B), recebeu '%s'",
@@ -910,6 +1003,7 @@ static void check_node(TypeChecker *typechecker, SymbolTable *table, Node *node)
         case NODE_UNARY_OP:
         case NODE_POSTFIX_OP:
         case NODE_VAR_ACCESS:
+        case NODE_CAST:
             infer_type(typechecker, table, current);
             break;
         default:

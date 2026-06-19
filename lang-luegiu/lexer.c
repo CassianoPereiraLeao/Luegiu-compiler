@@ -75,6 +75,13 @@ static Token create_token(Lexer *lexer, TokenType type) {
     token.line = lexer->line;
     token.col = lexer->col;
     token.file_name = lexer->file_name;
+
+    if(token.view.start == NULL || token.view.len > 4096) {
+        fprintf(stderr, "TOKEN INVALIDO: type=%d len=%zu start=%p line=%d\n",
+            type, token.view.len, (void*)token.view.start, token.line);
+        abort();
+    }
+    
     return token;
 }
 
@@ -113,7 +120,7 @@ static TokenType check_keyword(View view) {
     if(strcompare(view, "else")) return TOKEN_KEYWORD_ELSE;
     if(strcompare(view, "struct")) return TOKEN_KEYWORD_STRUCT;
     if(strcompare(view, "static")) return TOKEN_KEYWORD_STATIC;
-    if(strcompare(view, "link")) return TOKEN_KEYWORKD_LINK;
+    if(strcompare(view, "link")) return TOKEN_KEYWORD_LINK;
     if(strcompare(view, "const"))  return TOKEN_KEYWORD_CONST;
     if(strcompare(view, "union")) return TOKEN_KEYWORD_UNION;
 

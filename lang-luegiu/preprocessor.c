@@ -125,16 +125,24 @@ static IncludePolicy parse_use_directive(const char* source, const char** out) {
 }
 
 static char* expand_extracts(const char* src, const char* base_dir, const char* lib_dir, Arena *arena, IncludePolicy policy) {
+    // fprintf(stderr, "=== EXPAND_MACROS INPUT ===\n%s\n=== END ===\n", src);
     size_t src_len = strlen(src);
-    size_t cap = src_len * 4 + 1;
+    size_t cap = src_len * 64 + 65536;
     char* out = (char*)arena_alloc(arena, cap);
     char* w = out;
 
     const char* source = src;
-
     IncludePolicy file_policy = policy;
 
-    #define WRITE(str, len) do { memcpy(w, (str), (len)); w += (len); } while(0);
+    #define WRITE(str, len) do { \
+        size_t _len = (len); \
+        if((size_t)(w - out) + _len + 1 >= cap) { \
+            fprintf(stderr, "Preprocessador: buffer de expansao estourado\n"); \
+            exit(1); \
+        } \
+        memcpy(w, (str), _len); \
+        w += _len; \
+    } while(0)
 
     while(*source) {
         const char* line_start = source;
@@ -273,6 +281,7 @@ static Macro* collect_macros(const char* src, char* out, Arena *arena) {
             size_t value_len = source - value_start;
 
             while(value_len > 0 && value_start[value_len - 1] == ' ') value_len--;
+            while(value_len > 0 && value_start[value_len - 1] == '\r') value_len--;
 
             char* value_copy = (char*)arena_alloc(arena, value_len + 1);
             memcpy(value_copy, value_start, value_len);
@@ -300,9 +309,50 @@ static Macro* collect_macros(const char* src, char* out, Arena *arena) {
 }
 
 static char* expand_macros(const char* src, Macro *macros, Arena *arena) {
-    size_t src_len = strlen(src);
-    size_t cap = src_len * 4 + 1;
-    char* out = (char*)arena_alloc(arena, cap);
+    fprintf(stderr, "=== EXPAND_MACROS INPUT ===\n%s\n=== END ===\n", src);
+    size_t needed = 0;
+    const char* s = src;
+    while(*s) {
+        if(*s == '"') {
+            needed++;
+            s++;
+            while(*s && *s != '"') {
+                if(*s == '\\' && *(s+1)) { needed++; s++; }
+                needed++; s++;
+            }
+            if(*s) { needed++; s++; }
+            continue;
+        }
+        if(*s == '\'' ) {
+            needed++;
+            s++;
+            while(*s && *s != '\'') {
+                if(*s == '\\' && *(s+1)) { needed++; s++; }
+                needed++; s++;
+            }
+            if(*s) { needed++; s++; }
+            continue;
+        }
+        if(is_identifier_char(*s) && !(*s >= '0' && *s <= '9')) {
+            const char* start = s;
+            while(is_identifier_char(*s)) s++;
+            size_t len = s - start;
+            bool found = false;
+            for(Macro* m = macros; m; m = m->next) {
+                if(m->name_len == len && strncmp(m->name, start, len) == 0) {
+                    needed += m->value_len;
+                    found = true;
+                    break;
+                }
+            }
+            if(!found) needed += len;
+            continue;
+        }
+        needed++;
+        s++;
+    }
+
+    char* out = (char*)arena_alloc(arena, needed + 1);
     char* w = out;
     const char* source = src;
 
@@ -375,6 +425,7 @@ static char* expand_macros(const char* src, Macro *macros, Arena *arena) {
     }
 
     *w = '\0';
+    fprintf(stderr, "=== EXPAND_MACROS OUTPUT ===\n%s\n=== END ===\n", src);
     return out;
 }
 

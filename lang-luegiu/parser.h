@@ -10,6 +10,7 @@ typedef struct NodeList NodeList;
 
 typedef enum {
     NODE_VAR_DECL,
+    NODE_CAST,
     NODE_BINARY_OP,
     NODE_FUNC_CALL,
     NODE_FUNC_DECL,
@@ -85,10 +86,10 @@ typedef struct Node {
         struct {
             TypedefKind type;
             View name;
-
             struct Node* struct_node;
             struct Node* enum_node;
             Token primitive;
+            size_t primitive_ptr_lvl;
         } typedef_decl;
 
         struct {
@@ -128,6 +129,13 @@ typedef struct Node {
             View name;
             struct Node* expr;
         } enum_member;
+
+        struct {
+            TokenType target;
+            size_t ptr_lvl;
+            View typename;
+            struct Node* expr;
+        } cast_expr;
 
         struct {
             TokenType return_type;
