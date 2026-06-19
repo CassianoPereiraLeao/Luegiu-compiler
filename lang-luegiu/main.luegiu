@@ -52,16 +52,16 @@ void read_whole_file(const char* path, FileResult* out) {
     link handle = file_open(path, 0);
     if(!handle) {
         show("Erro ao abrir arquivo\n");
-        /comment out->bytes_read = 0; endcomment/
+        out->bytes_read = 0;
         return;
     }
 
-    /comment char* buffer = (char*)memoryalloc(4 * KB); endcomment/
-    /comment int bytes_read = file_read(handle, buffer, 4 * KB); endcomment/
+    char* buffer = (char*)memoryalloc(4 * KB);
+    int bytes_read = file_read(handle, buffer, 4 * KB);
 
     file_close(handle);
 } 
 
 void start(int argc, char* argv[]) {
-    
+    show("oi");
 }

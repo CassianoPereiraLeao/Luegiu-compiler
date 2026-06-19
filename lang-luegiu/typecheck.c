@@ -491,6 +491,33 @@ static TokenType infer_type(TypeChecker *typecheck, SymbolTable *table, Node *ex
                 return TOKEN_UNDEFINED;
             }
 
+            // Acesso a campo via . ou -> : delega inferencia para ambos os lados
+            if(lhs->type == NODE_BINARY_OP) {
+                TokenType lhs_type = infer_type(typecheck, table, lhs);
+                TokenType rhs_type = infer_type(typecheck, table, rhs);
+                size_t rhs_ptr = infer_ptr_lvl(table, rhs);
+                if(lhs_type != TOKEN_UNDEFINED && rhs_type != TOKEN_UNDEFINED &&
+                   !type_compatible(lhs_type, 0, rhs_type, rhs_ptr)) {
+                    typecheck_error_at(typecheck, expr,
+                        "atribuicao incompativel: campo e '%s', expressao e '%s'",
+                        token_to_str(lhs_type), token_to_str(rhs_type));
+                }
+                return lhs_type;
+            }
+
+            // Acesso a array: aceita sem verificacao de tipo por enquanto
+            if(lhs->type == NODE_ARRAY) {
+                infer_type(typecheck, table, rhs);
+                return TOKEN_UNDEFINED;
+            }
+
+            // Dereference: *ptr = valor
+            if(lhs->type == NODE_UNARY_OP && lhs->ast.unary_op.op == TOKEN_OP_STAR) {
+                infer_type(typecheck, table, rhs);
+                return TOKEN_UNDEFINED;
+            }
+
+            // Apenas aqui e seguro acessar var_access.name
             Symbol* sym = lookup_table(table, lhs->ast.var_access.name);
             if(!sym) {
                 typecheck_error_at(typecheck, lhs, "'%.*s' nao foi declarado",
@@ -531,6 +558,13 @@ static TokenType infer_type(TypeChecker *typecheck, SymbolTable *table, Node *ex
             if(!is_lvalue(lhs)) {
                 typecheck_error_at(typecheck, expr, "lado esquerdo de '%s' nao e um lvalue valido",
                     token_to_str(op));
+                return TOKEN_UNDEFINED;
+            }
+
+            // Para . -> e array: nao suportamos += nesses casos ainda
+            if(lhs->type != NODE_VAR_ACCESS) {
+                typecheck_error_at(typecheck, expr,
+                    "'%s' so e suportado em variaveis simples", token_to_str(op));
                 return TOKEN_UNDEFINED;
             }
 

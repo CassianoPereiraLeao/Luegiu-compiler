@@ -386,6 +386,10 @@ static int bytes_data_value(TokenType type) {
 
 static int collect_frame_size(Node *block) {
     if(!block) return 0;
+    
+    if(block->type != NODE_BLOCK && block->type != NODE_PROGRAM)
+        return 0;
+
     int total = 0;
     NodeList* stmts = block->ast.program.declarations;
     if(!stmts) return 0;
