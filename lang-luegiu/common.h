@@ -202,6 +202,7 @@ typedef struct Symbol {
     bool is_static;
     long long const_value;
     bool has_const_value;
+    bool is_variadic;
     struct Symbol* next;
 } Symbol;
 

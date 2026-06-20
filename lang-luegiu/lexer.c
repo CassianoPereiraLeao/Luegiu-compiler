@@ -75,12 +75,6 @@ static Token create_token(Lexer *lexer, TokenType type) {
     token.line = lexer->line;
     token.col = lexer->col;
     token.file_name = lexer->file_name;
-
-    if(token.view.start == NULL || token.view.len > 4096) {
-        fprintf(stderr, "TOKEN INVALIDO: type=%d len=%zu start=%p line=%d\n",
-            type, token.view.len, (void*)token.view.start, token.line);
-        abort();
-    }
     
     return token;
 }

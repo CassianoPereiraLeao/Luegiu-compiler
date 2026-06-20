@@ -618,6 +618,72 @@ static Node* parse_return(Parser *parser) {
     return node;
 }
 
+static Node* parse_case_value(Parser *parser) {
+    if(peek(parser).type == TOKEN_INT_LIT ||
+        peek(parser).type == TOKEN_HEXA ||
+        peek(parser).type == TOKEN_KEYWORD_TRUE ||
+        peek(parser).type == TOKEN_KEYWORD_FALSE ||
+        peek(parser).type == TOKEN_IDENTIFIER ||
+        peek(parser).type == TOKEN_CHAR_LITERAL) {
+            return parse_unary(parser);
+        }
+
+    diag_fatal(parser->diag, parser->lexer->file_name,
+        (size_t)parser->lexer->line, (size_t)parser->lexer->col,
+        "esperado valor constante apos 'case'");
+    return NULL;
+}
+
+static Node* parse_switch(Parser *parser) {
+    Node* node = create_node(parser, NODE_SWITCH_STMT);
+
+    expected(parser, TOKEN_KEYWORD_SWITCH, "Esperado 'switch'");
+    expected(parser, TOKEN_LPAREN, "Esperado '(' apos 'switch'");
+    node->ast.switch_stmt.subject = parse_expr(parser);
+    expected(parser, TOKEN_RPAREN, "Esperado ')' apos expressao do switch");
+
+    expected(parser, TOKEN_LBRACE, "Esperado '{' apos switch");
+
+    NodeList* cases = list_create(parser->arena);
+    if(peek(parser).type != TOKEN_KEYWORD_CASE) {
+        diag_fatal(parser->diag, parser->lexer->file_name,
+            (size_t)parser->lexer->line, (size_t)parser->lexer->col,
+            "switch deve ter pelo menos um 'case'");
+    }
+
+    while(peek(parser).type == TOKEN_KEYWORD_CASE) {
+        Token case_token = peek(parser);
+        advance(parser);
+
+        Node* value = parse_case_value(parser);
+        expected(parser, TOKEN_COLON, "Esperado ':' apos valor do case");
+
+        Node* body = create_node_at(parser, NODE_BLOCK, case_token);
+        body->ast.program.declarations = list_create(parser->arena);
+
+        while(peek(parser).type != TOKEN_KEYWORD_CASE &&
+                peek(parser).type != TOKEN_RBRACE) {
+            if(peek(parser).type == TOKEN_EOF) {
+                diag_fatal(parser->diag, parser->lexer->file_name,
+                    (size_t)parser->lexer->line, (size_t)parser->lexer->col,
+                    "switch nao fechado, fim de arquivo inesperado");
+            }
+            Node* stmt = parse_statement(parser);
+            list_push(parser->arena, body->ast.program.declarations, stmt);
+        }
+
+        Node* clause = create_node_at(parser, NODE_CASE_CLAUSE, case_token);
+        clause->ast.case_clause.expr = value;
+        clause->ast.case_clause.body = body;
+        list_push(parser->arena, cases, clause);
+    }
+
+    expected(parser, TOKEN_RBRACE, "Esperado '}' para fechar switch");
+
+    node->ast.switch_stmt.cases = cases;
+    return node;
+}
+
 static Node* parse_func_decl(Parser *parser, Token type, size_t ptr_lvl, View name, bool is_static) {
     Node* node = create_node(parser, NODE_FUNC_DECL);
     node->ast.func_decl.return_type = type.type;
@@ -644,10 +710,7 @@ static Node* parse_func_decl(Parser *parser, Token type, size_t ptr_lvl, View na
             while(match(parser, TOKEN_OP_STAR)) param_ptr++;
 
             if(param_token.type == TOKEN_OP_INF_ARGS) {
-                Node* param = create_node_at(parser, NODE_VAR_DECL, param_token);
-                param->ast.var_decl.data_type = TOKEN_OP_INF_ARGS;
-                param->ast.var_decl.pointer_lvl = 0;
-                list_push(parser->arena, node->ast.func_decl.params, param);
+                node->ast.func_decl.is_variadic = true;
                 break;
             }
 
@@ -687,22 +750,23 @@ static Node* parse_decl(Parser* parser) {
     Token type = peek(parser);
     advance(parser);
 
+    View typename = {0};
     if(type.type == TOKEN_IDENTIFIER) {
         Symbol* sym = lookup_table(parser->table, type.view);
-        if(sym && sym->category == SYMBOL_TYPEDEF)
+        if(sym && sym->category == SYMBOL_TYPEDEF) {
+            typename = type.view;
             type.type = sym->type;
+        }
     }
 
-    View type_name = { 0 };
-
-    if(type.type == TOKEN_KEYWORD_STRUCT) {
+    if(type.type == TOKEN_KEYWORD_STRUCT && typename.len == 0) {
         expected(parser, TOKEN_IDENTIFIER, "Esperado nome da struct.");
-        type_name = parser->prev.view;
+        typename = parser->prev.view;
     }
 
-    if(type.type == TOKEN_KEYWORD_UNION) {
+    if(type.type == TOKEN_KEYWORD_UNION && typename.len == 0) {
         expected(parser, TOKEN_IDENTIFIER, "Esperado nome da union.");
-        type_name = parser->prev.view;
+        typename = parser->prev.view;
     }
 
     size_t pointer_lvl = 0;
@@ -713,7 +777,7 @@ static Node* parse_decl(Parser* parser) {
 
     if(match(parser, TOKEN_LPAREN))
         return parse_func_decl(parser, type, pointer_lvl, name, is_static);
-    return parse_var_decl(parser, type, type_name, pointer_lvl, name, is_const, is_static);
+    return parse_var_decl(parser, type, typename, pointer_lvl, name, is_const, is_static);
 }
 
 static Node* parse_union(Parser *parser, bool anonymous) {
@@ -1049,28 +1113,38 @@ static Node* parse_typedefinition_primitive(Parser *parser) {
 static Node* parse_typedefinition(Parser *parser) {
     expected(parser, TOKEN_KEYWORD_TYPEDEFINITION, "Esperado 'typedefinition'");
 
+    Node * node = NULL;
     Token next = peek(parser);
 
     if(next.type == TOKEN_KEYWORD_STRUCT) {
-        return parse_typedefinition_struct(parser);
-    }
-    
-    if(next.type == TOKEN_KEYWORD_ENUM) {
-        return parse_typedefinition_enum(parser);
-    }
-
-    if(next.type == TOKEN_KEYWORD_UNION) {
-        return parse_typedefinition_union(parser);
+        node = parse_typedefinition_struct(parser);
+    } else if(next.type == TOKEN_KEYWORD_ENUM) {
+        node = parse_typedefinition_enum(parser);
+    } else if(next.type == TOKEN_KEYWORD_UNION) {
+        node = parse_typedefinition_union(parser);
+    } else if(is_type(parser, next)) {
+        node =  parse_typedefinition_primitive(parser);
     }
 
-    if(is_type(parser, next)) {
-        return parse_typedefinition_primitive(parser);
+    if(node && node->type == NODE_TYPEDEF_DECL) {
+        View alias = node->ast.typedef_decl.name;
+        if(!lookup_table(parser->table, alias)) {
+            TokenType tt = TOKEN_KEYWORD_STRUCT;
+            if(node->ast.typedef_decl.type == ENUM)    tt = TOKEN_KEYWORD_ENUM;
+            if(node->ast.typedef_decl.type == UNION)   tt = TOKEN_KEYWORD_UNION;
+            if(node->ast.typedef_decl.type == PRIMITIVE) tt = node->ast.typedef_decl.primitive.type;
+            insert_table(parser->table, alias, SYMBOL_TYPEDEF, 0, tt);
+        }
     }
 
-    diag_fatal(parser->diag, parser->lexer->file_name,
+    if(!node) {
+        diag_fatal(parser->diag, parser->lexer->file_name,
         (size_t)parser->lexer->line, (size_t)parser->lexer->col,
         "Esperado tipo após 'typedefinition'");
-    return NULL;
+        return NULL;
+    }
+
+    return node;
 }
 
 static Node* parse_if(Parser *parser) {
@@ -1215,6 +1289,9 @@ static Node* parse_statement(Parser *parser) {
         
     if(peek(parser).type == TOKEN_KEYWORD_RETURN)
         return parse_return(parser);
+
+    if(peek(parser).type == TOKEN_KEYWORD_SWITCH)
+        return parse_switch(parser);
 
     Node* expr = parse_expr(parser);
     expected(parser, TOKEN_SEMICOLON, "Esperado ';' apos expressao");

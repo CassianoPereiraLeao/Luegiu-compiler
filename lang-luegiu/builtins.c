@@ -129,4 +129,17 @@ void register_builtins(SymbolTable *table, Arena *arena) {
         sym->params[0].type = TOKEN_KEYWORD_INT;
         sym->params[0].pointer_lvl = 0;
     }
+
+    // link args (ponteiro pro slot atual)
+    {
+        REGISTER_BUILTIN("__va_start", TOKEN_KEYWORD_LINK, 0);
+    }
+
+    // link args
+    {
+        REGISTER_BUILTIN("__va_next", TOKEN_KEYWORD_LINK, 1);
+        Symbol* sym = lookup_table(table, (View){"__va_next", 9});
+        sym->params[0].type = TOKEN_KEYWORD_LINK;
+        sym->params[0].pointer_lvl = 0;
+    }
 }

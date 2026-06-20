@@ -46,7 +46,6 @@ int main(int argc, char* argv[]) {
 
     char *lib_dir = "./stdlib";
     char *processed = preprocess_source(source, base_dir, lib_dir, &arena);
-    fprintf(stderr, "=== PROCESSED ===\n%s\n=== END ===\n", processed);
     diag_register_source(&context, input_path, processed);
     if (!processed) {
         fprintf(stderr, "Erro: preprocessador retornou NULL\n");

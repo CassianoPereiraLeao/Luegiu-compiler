@@ -309,7 +309,6 @@ static Macro* collect_macros(const char* src, char* out, Arena *arena) {
 }
 
 static char* expand_macros(const char* src, Macro *macros, Arena *arena) {
-    fprintf(stderr, "=== EXPAND_MACROS INPUT ===\n%s\n=== END ===\n", src);
     size_t needed = 0;
     const char* s = src;
     while(*s) {
@@ -425,7 +424,6 @@ static char* expand_macros(const char* src, Macro *macros, Arena *arena) {
     }
 
     *w = '\0';
-    fprintf(stderr, "=== EXPAND_MACROS OUTPUT ===\n%s\n=== END ===\n", src);
     return out;
 }
 

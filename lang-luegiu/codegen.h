@@ -3,6 +3,7 @@
 #define WIN64_SHADOW_SPACE 32
 #define WIN64_INT_PARAMS 4
 #define CODEGEN_MAX_LOOP_DEPTH 64
+#define CODEGEN_MAX_BREAK_DEPTH 64
 
 #include "common.h"
 #include "parser.h"
@@ -11,6 +12,16 @@
 static const char* const WIN64_INT_REGISTERS[WIN64_INT_PARAMS] = {
     "rcx", "rdx", "r8", "r9"
 };
+
+typedef enum {
+    BREAK_CTX_LOOP,
+    BREAK_CTX_SWITCH
+} BreakCtxType;
+
+typedef struct {
+    BreakCtxType type;
+    int label_end;
+} BreakCtx;
 
 typedef struct {
     char* data;
@@ -43,6 +54,7 @@ typedef struct {
     CodeGenBuffer sec_data;
     CodeGenBuffer sec_bss;
     CodeGenBuffer sec_text;
+    CodeGenBuffer sec_init;
 
     Arena* arena;
     SymbolTable* table;
@@ -50,6 +62,9 @@ typedef struct {
 
     CodeGenString* strings;
     size_t string_count;
+
+    BreakCtx break_stack[CODEGEN_MAX_BREAK_DEPTH];
+    int break_depth;
 
     CodeGenLocal* locals;
     int stack_top;

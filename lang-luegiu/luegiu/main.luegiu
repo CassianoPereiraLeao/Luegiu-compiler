@@ -1,0 +1,40 @@
+extract -> "header.lh"
+typedefinition uint64 dimention;
+
+link memoryplace(big size) {
+    link alloc = __malloc(size);
+    if(!alloc) {
+        return LNULL;
+    }
+    return alloc;
+}
+
+void memorydelete(link memory) {
+    if(memory == LNULL) {
+        return;
+    }
+    __free(memory);
+}
+
+void showi(big value) {
+    __write_int(value);
+}
+
+dimention strlen(const char* str) {
+    uint64 n = 0;
+    while(str[n]) n++;
+    return n; 
+}
+
+bool show(const char* format, ...) {
+    __write_stdout(format, strlen(format));
+}
+
+link start(int argc, char* argv[]) {
+    char* alloc = (char*)memoryplace(4 * KB);
+    memorydelete(alloc);
+    if('a' == 'a') {
+        show("funciona");
+    }
+    return 0x00;
+}

@@ -29,6 +29,8 @@ typedef enum {
     NODE_ENUM_MEMBER,
     NODE_BLOCK,
     NODE_IF_STMT,
+    NODE_SWITCH_STMT,
+    NODE_CASE_CLAUSE,
     NODE_WHILE_STMT,
     NODE_FOR_STMT,
     NODE_DO_WHILE_STMT,
@@ -98,6 +100,16 @@ typedef struct Node {
         } struct_decl;
 
         struct {
+            struct Node* expr;
+            struct Node* body;
+        } case_clause;
+
+        struct {
+            struct Node* subject;
+            NodeList* cases;
+        } switch_stmt;
+
+        struct {
             struct Node* condition;
             struct Node* then;
             struct Node* otherwise;
@@ -143,6 +155,7 @@ typedef struct Node {
             View name;
             NodeList* params;
             bool is_static;
+            bool is_variadic;
             struct Node* body;
         } func_decl;
 

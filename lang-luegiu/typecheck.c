@@ -118,6 +118,7 @@ static bool is_lvalue(Node *node) {
     if(node->type == NODE_ARRAY) return true;
     return false;
 }
+
 void push_scope(SymbolTable *table) {
     Scope* scope = (Scope*)arena_alloc(table->arena, sizeof(Scope));
     scope->symbols = NULL;
@@ -145,7 +146,6 @@ Symbol* insert_table(SymbolTable *table, View name, SymbolCategory category, siz
 
 Symbol* lookup_table(SymbolTable *table, View name) {
     Scope* current = table->current_scope;
-
     while(current != NULL) {
         Symbol* sym = current->symbols;
         while(sym != NULL) {
@@ -154,7 +154,6 @@ Symbol* lookup_table(SymbolTable *table, View name) {
         }
         current = current->parent;
     }
-
     return NULL;
 }
 
@@ -163,6 +162,74 @@ static Symbol* lookup_current_table(SymbolTable *table, View name) {
     while(sym) {
         if(view_equals(sym->name, name)) return sym;
         sym = sym->next;
+    }
+    return NULL;
+}
+
+long long decode_char_literal(View text) {
+    const char* p   = text.start;
+    size_t      len = text.len;
+
+    if(len >= 3 && p[0] == '\'' && p[len - 1] == '\'') {
+        if(p[1] == '\\' && len == 4) {
+            switch(p[2]) {
+            case 'n': return '\n';
+            case 't': return '\t';
+            case 'r': return '\r';
+            case '0': return '\0';
+            case '\\': return '\\';
+            case '\'': return '\'';
+            default:  return p[2];
+            }
+        }
+        return (unsigned char)p[1];
+    }
+
+    return 0;
+}
+
+static bool resolve_case_const(SymbolTable *table, Node *value, long long *out) {
+    if(value->type == NODE_INT_LIT || value->type == NODE_HEXA_LIT) {
+        *out = value->ast.numeric_literal.value;
+        return true;
+    }
+
+    if(value->type == NODE_CHAR_LIT) {
+        *out = decode_char_literal(value->ast.string_literal.text);
+        return true;
+    }
+
+    if(value->type == NODE_VAR_ACCESS) {
+        Symbol* sym = lookup_table(table, value->ast.var_access.name);
+        if(sym && sym->is_const && sym->has_const_value) {
+            *out = sym->const_value;
+            return true;
+        }
+    }
+
+    return false;
+}
+
+static Symbol* resolve_struct_sym(SymbolTable *table, View name) {
+    Symbol* sym = lookup_table(table, name);
+    if(!sym) return NULL;
+    if(sym->category == SYMBOL_STRUCT) return sym;
+
+    if(sym->category == SYMBOL_TYPEDEF) {
+        Scope* scope = table->current_scope;
+        while(scope) {
+            Symbol* s = scope->symbols;
+            while(s) {
+                if(s->category == SYMBOL_STRUCT &&
+                    s->name.len == name.len &&
+                    memcmp(s->name.start, name.start, name.len) == 0) {
+                    return s;
+                }
+                s = s->next;
+            }
+            scope = scope->parent;
+        }
+        return NULL;
     }
 
     return NULL;
@@ -209,8 +276,7 @@ static void typecheck_error_at(TypeChecker *typecheck, Node *node, const char* f
 }
 
 static bool is_numeric_type(TokenType token) {
-    switch (token)
-    {
+    switch (token) {
     case TOKEN_KEYWORD_INT:
     case TOKEN_KEYWORD_INT8:
     case TOKEN_KEYWORD_INT16:
@@ -225,15 +291,13 @@ static bool is_numeric_type(TokenType token) {
     case TOKEN_KEYWORD_SMALL:
     case TOKEN_KEYWORD_BIG:
         return true;
-    
     default:
         return false;
     }
 }
 
 static bool is_integer_type(TokenType token) {
-    switch (token)
-    {
+    switch (token) {
     case TOKEN_KEYWORD_INT:
     case TOKEN_KEYWORD_INT8:
     case TOKEN_KEYWORD_INT16:
@@ -245,7 +309,6 @@ static bool is_integer_type(TokenType token) {
     case TOKEN_KEYWORD_UINT64:
     case TOKEN_KEYWORD_BIG:
         return true;
-    
     default:
         return false;
     }
@@ -253,35 +316,35 @@ static bool is_integer_type(TokenType token) {
 
 static bool type_compatible(TokenType decl, size_t decl_ptr, TokenType actual, size_t actual_ptr) {
     if(actual == TOKEN_STRING_LITERAL && actual_ptr == 1
-        && decl == TOKEN_KEYWORD_CHAR && decl_ptr == 1) {
-            return true;
-        }
+        && ((decl == TOKEN_KEYWORD_CHAR && decl_ptr == 1) || (decl == TOKEN_KEYWORD_UTF16CHAR && decl_ptr == 1))) {
+        return true;
+    }
 
-    if(decl_ptr > 0 || actual_ptr > 0) 
+    if(decl == TOKEN_KEYWORD_LINK && decl_ptr == 0 && actual_ptr > 0) {
+        return true;
+    }
+
+    if(decl_ptr > 0 || actual_ptr > 0)
         return (decl == actual && decl_ptr == actual_ptr);
 
     if(decl == actual) return true;
-
     if(is_numeric_type(decl) && is_numeric_type(actual)) return true;
-
     if(decl == TOKEN_KEYWORD_CHAR && actual == TOKEN_KEYWORD_CHAR) return true;
 
-    if (actual == TOKEN_DOUBLE_LIT && (decl == TOKEN_KEYWORD_FLOAT || decl == TOKEN_KEYWORD_DOUBLE))
+    if(actual == TOKEN_DOUBLE_LIT && (decl == TOKEN_KEYWORD_FLOAT || decl == TOKEN_KEYWORD_DOUBLE))
+        return true;
+    if(decl == TOKEN_DOUBLE_LIT && actual == TOKEN_DOUBLE_LIT)
         return true;
 
-    if (decl == TOKEN_DOUBLE_LIT && actual == TOKEN_DOUBLE_LIT)
-        return true;
-
-    if (actual == TOKEN_HEXA) {
-        if (decl == TOKEN_KEYWORD_LINK) return true;
-        if (is_integer_type(decl))            return true;
+    if(actual == TOKEN_HEXA) {
+        if(decl == TOKEN_KEYWORD_LINK) return true;
+        if(is_integer_type(decl))      return true;
         return false;
     }
 
     if(actual == TOKEN_KEYWORD_CHAR ||
         actual == TOKEN_KEYWORD_UTF8CHAR ||
         actual == TOKEN_KEYWORD_UTF16CHAR) {
-        
         if(decl == TOKEN_KEYWORD_UTF16CHAR) return true;
         if(decl == TOKEN_KEYWORD_UTF8CHAR)
             return (actual == TOKEN_KEYWORD_UTF8CHAR || actual == TOKEN_KEYWORD_CHAR);
@@ -294,15 +357,14 @@ static bool type_compatible(TokenType decl, size_t decl_ptr, TokenType actual, s
         return (decl == TOKEN_KEYWORD_CHAR || decl == TOKEN_KEYWORD_UTF16CHAR || decl == TOKEN_KEYWORD_UTF8CHAR);
     }
 
-    if (decl == TOKEN_KEYWORD_LINK)
+    if(decl == TOKEN_KEYWORD_LINK)
         return (actual == TOKEN_KEYWORD_LINK);
 
     return false;
 }
 
 static size_t infer_ptr_lvl(SymbolTable *table, Node *expr) {
-    switch (expr->type)
-    {
+    switch (expr->type) {
     case NODE_VAR_ACCESS: {
         Symbol *sym = lookup_table(table, expr->ast.var_access.name);
         return sym ? sym->pointer_lvl : 0;
@@ -312,9 +374,8 @@ static size_t infer_ptr_lvl(SymbolTable *table, Node *expr) {
         return sym ? sym->pointer_lvl : 0;
     }
     case NODE_UNARY_OP: {
-        if(expr->ast.unary_op.op == TOKEN_BIT_AND) 
+        if(expr->ast.unary_op.op == TOKEN_BIT_AND)
             return infer_ptr_lvl(table, expr->ast.unary_op.operand) + 1;
-
         if(expr->ast.unary_op.op == TOKEN_OP_STAR) {
             size_t lvl = infer_ptr_lvl(table, expr->ast.unary_op.operand);
             return lvl > 0 ? lvl - 1 : 0;
@@ -323,8 +384,35 @@ static size_t infer_ptr_lvl(SymbolTable *table, Node *expr) {
     }
     case NODE_CAST:
         return expr->ast.cast_expr.ptr_lvl;
-    case NODE_BINARY_OP:
+    case NODE_BINARY_OP: {
+        TokenType op = expr->ast.binary_op.op;
+
+        if(op == TOKEN_DOT || op == TOKEN_OP_ARROW) {
+            Node* lhs = expr->ast.binary_op.left;
+            Node* rhs = expr->ast.binary_op.right;
+
+            View struct_type_name = { 0 };
+            if(lhs->type == NODE_VAR_ACCESS) {
+                Symbol* lhs_sym = lookup_table(table, lhs->ast.var_access.name);
+                if(lhs_sym) struct_type_name = lhs_sym->typename;
+            }
+
+            if(struct_type_name.len == 0) return 0;
+
+            Symbol* struct_sym = resolve_struct_sym(table, struct_type_name);
+            if(!struct_sym) return 0;
+
+            View field_name = rhs->ast.var_access.name;
+            for(size_t i = 0; i < struct_sym->fields_count; ++i) {
+                if(struct_sym->fields[i].name.len == field_name.len &&
+                    memcmp(struct_sym->fields[i].name.start, field_name.start, field_name.len) == 0)
+                    return struct_sym->fields[i].pointer_lvl;
+            }
+            return 0;
+        }
+
         return 0;
+    }
     case NODE_STRING_LIT:
         return 1;
     default: return 0;
@@ -334,13 +422,13 @@ static size_t infer_ptr_lvl(SymbolTable *table, Node *expr) {
 static TokenType infer_type(TypeChecker *typecheck, SymbolTable *table, Node *expr) {
     if(!expr) return TOKEN_UNDEFINED;
 
-    switch (expr->type)
-    {
+    switch (expr->type) {
     case NODE_INT_LIT: return TOKEN_KEYWORD_INT;
     case NODE_DOUBLE_LIT: return TOKEN_DOUBLE_LIT;
     case NODE_CHAR_LIT: return TOKEN_CHAR_LITERAL;
     case NODE_STRING_LIT: return TOKEN_STRING_LITERAL;
     case NODE_HEXA_LIT: return TOKEN_HEXA;
+
     case NODE_VAR_ACCESS: {
         Symbol* sym = lookup_table(table, expr->ast.var_access.name);
         if(!sym) {
@@ -350,6 +438,7 @@ static TokenType infer_type(TypeChecker *typecheck, SymbolTable *table, Node *ex
         }
         return sym->type;
     }
+
     case NODE_FUNC_CALL: {
         View name = expr->ast.func_call.name;
         Symbol* sym = lookup_table(table, name);
@@ -369,10 +458,17 @@ static TokenType infer_type(TypeChecker *typecheck, SymbolTable *table, Node *ex
         NodeList* args = expr->ast.func_call.args;
         size_t arg_count = args ? args->count : 0;
 
+        if(sym->is_variadic) {
+            if(arg_count < sym->params_count) {
+                typecheck_error(typecheck, "'%.*s' espera pelo menos %zu argumento(s), recebeu %zu",
+                    (int)name.len, name.start, sym->params_count, arg_count);
+            }
+            return sym->type;
+        }
+
         if(arg_count != sym->params_count) {
             typecheck_error(typecheck, "'%.*s' espera %zu argumento(s), recebeu %zu",
-                (int)name.len, name.start,
-                sym->params_count, arg_count);
+                (int)name.len, name.start, sym->params_count, arg_count);
             return sym->type;
         }
 
@@ -393,9 +489,11 @@ static TokenType infer_type(TypeChecker *typecheck, SymbolTable *table, Node *ex
 
         return sym->type;
     }
+
     case NODE_UNARY_OP:
-    case NODE_POSTFIX_OP: 
+    case NODE_POSTFIX_OP:
         return infer_type(typecheck, table, expr->ast.unary_op.operand);
+
     case NODE_CAST: {
         TokenType target = expr->ast.cast_expr.target;
         size_t ptr_lvl = expr->ast.cast_expr.ptr_lvl;
@@ -410,12 +508,10 @@ static TokenType infer_type(TypeChecker *typecheck, SymbolTable *table, Node *ex
             return TOKEN_UNDEFINED;
         }
 
-        if(source == TOKEN_KEYWORD_LINK) {
-            return target;
-        }
+        if(source == TOKEN_KEYWORD_LINK) return target;
 
         bool target_is_aggregate = (target == TOKEN_KEYWORD_STRUCT || target == TOKEN_KEYWORD_UNION);
-        bool source_is_aggregate = (target == TOKEN_KEYWORD_STRUCT || target == TOKEN_KEYWORD_UNION);
+        bool source_is_aggregate = (source == TOKEN_KEYWORD_STRUCT || source == TOKEN_KEYWORD_UNION);
 
         if(target_is_aggregate && ptr_lvl == 0) {
             typecheck_error_at(typecheck, expr,
@@ -435,6 +531,7 @@ static TokenType infer_type(TypeChecker *typecheck, SymbolTable *table, Node *ex
 
         return target;
     }
+
     case NODE_BINARY_OP: {
         TokenType op = expr->ast.binary_op.op;
 
@@ -462,8 +559,8 @@ static TokenType infer_type(TypeChecker *typecheck, SymbolTable *table, Node *ex
 
             if(struct_type_name.len == 0) return TOKEN_UNDEFINED;
 
-            Symbol* struct_sym = lookup_table(table, struct_type_name);
-            if(!struct_sym || struct_sym->category != SYMBOL_STRUCT) {
+            Symbol* struct_sym = resolve_struct_sym(table, struct_type_name);
+            if(!struct_sym) {
                 typecheck_error_at(typecheck, expr, "'%.*s' nao e uma struct conhecida",
                         (int)struct_type_name.len, struct_type_name.start);
                 return TOKEN_UNDEFINED;
@@ -471,7 +568,7 @@ static TokenType infer_type(TypeChecker *typecheck, SymbolTable *table, Node *ex
 
             View field_name = rhs->ast.var_access.name;
             for(size_t i = 0; i < struct_sym->fields_count; ++i) {
-                if(struct_sym->fields[i].name.len == field_name.len && 
+                if(struct_sym->fields[i].name.len == field_name.len &&
                     memcmp(struct_sym->fields[i].name.start, field_name.start, field_name.len) == 0)
                     return struct_sym->fields[i].type;
             }
@@ -491,13 +588,13 @@ static TokenType infer_type(TypeChecker *typecheck, SymbolTable *table, Node *ex
                 return TOKEN_UNDEFINED;
             }
 
-            // Acesso a campo via . ou -> : delega inferencia para ambos os lados
             if(lhs->type == NODE_BINARY_OP) {
                 TokenType lhs_type = infer_type(typecheck, table, lhs);
+                size_t lhs_ptr = infer_ptr_lvl(table, lhs);
                 TokenType rhs_type = infer_type(typecheck, table, rhs);
                 size_t rhs_ptr = infer_ptr_lvl(table, rhs);
                 if(lhs_type != TOKEN_UNDEFINED && rhs_type != TOKEN_UNDEFINED &&
-                   !type_compatible(lhs_type, 0, rhs_type, rhs_ptr)) {
+                    !type_compatible(lhs_type, lhs_ptr, rhs_type, rhs_ptr)) {
                     typecheck_error_at(typecheck, expr,
                         "atribuicao incompativel: campo e '%s', expressao e '%s'",
                         token_to_str(lhs_type), token_to_str(rhs_type));
@@ -505,31 +602,26 @@ static TokenType infer_type(TypeChecker *typecheck, SymbolTable *table, Node *ex
                 return lhs_type;
             }
 
-            // Acesso a array: aceita sem verificacao de tipo por enquanto
             if(lhs->type == NODE_ARRAY) {
                 infer_type(typecheck, table, rhs);
                 return TOKEN_UNDEFINED;
             }
 
-            // Dereference: *ptr = valor
             if(lhs->type == NODE_UNARY_OP && lhs->ast.unary_op.op == TOKEN_OP_STAR) {
                 infer_type(typecheck, table, rhs);
                 return TOKEN_UNDEFINED;
             }
 
-            // Apenas aqui e seguro acessar var_access.name
             Symbol* sym = lookup_table(table, lhs->ast.var_access.name);
             if(!sym) {
                 typecheck_error_at(typecheck, lhs, "'%.*s' nao foi declarado",
-                    (int)lhs->ast.var_access.name.len,
-                    lhs->ast.var_access.name.start);
+                    (int)lhs->ast.var_access.name.len, lhs->ast.var_access.name.start);
                 return TOKEN_UNDEFINED;
             }
 
             if(sym->is_const) {
                 typecheck_error_at(typecheck, lhs, "atribuicao a variavel const '%.*s' nao e permitida",
-                    (int)lhs->ast.var_access.name.len,
-                    lhs->ast.var_access.name.start);
+                    (int)lhs->ast.var_access.name.len, lhs->ast.var_access.name.start);
                 return sym->type;
             }
 
@@ -538,20 +630,18 @@ static TokenType infer_type(TypeChecker *typecheck, SymbolTable *table, Node *ex
             if(rhs_type != TOKEN_UNDEFINED && !type_compatible(sym->type, sym->pointer_lvl, rhs_type, rhs_ptr)) {
                 typecheck_error_at(typecheck, expr, "atribuicao incompativel em '%.*s': "
                         "variavel e '%s', expressao e '%s'",
-                    (int)lhs->ast.var_access.name.len,
-                    lhs->ast.var_access.name.start,
-                    token_to_str(sym->type),
-                    token_to_str(rhs_type));
+                    (int)lhs->ast.var_access.name.len, lhs->ast.var_access.name.start,
+                    token_to_str(sym->type), token_to_str(rhs_type));
             }
 
             return sym->type;
         }
 
-        if (op == TOKEN_OP_PLUS_EQ  || op == TOKEN_OP_MINUS_EQ  ||
-        op == TOKEN_OP_STAR_EQ  || op == TOKEN_OP_SLASH_EQ  ||
-        op == TOKEN_OP_MOD_EQ   || op == TOKEN_BIT_AND_EQ   ||
-        op == TOKEN_BIT_OR_EQ   || op == TOKEN_BIT_LSHIFT_EQ||
-        op == TOKEN_BIT_RSHIFT_EQ) {
+        if(op == TOKEN_OP_PLUS_EQ  || op == TOKEN_OP_MINUS_EQ  ||
+           op == TOKEN_OP_STAR_EQ  || op == TOKEN_OP_SLASH_EQ  ||
+           op == TOKEN_OP_MOD_EQ   || op == TOKEN_BIT_AND_EQ   ||
+           op == TOKEN_BIT_OR_EQ   || op == TOKEN_BIT_LSHIFT_EQ||
+           op == TOKEN_BIT_RSHIFT_EQ) {
             Node* lhs = expr->ast.binary_op.left;
             Node* rhs = expr->ast.binary_op.right;
 
@@ -561,7 +651,6 @@ static TokenType infer_type(TypeChecker *typecheck, SymbolTable *table, Node *ex
                 return TOKEN_UNDEFINED;
             }
 
-            // Para . -> e array: nao suportamos += nesses casos ainda
             if(lhs->type != NODE_VAR_ACCESS) {
                 typecheck_error_at(typecheck, expr,
                     "'%s' so e suportado em variaveis simples", token_to_str(op));
@@ -571,39 +660,34 @@ static TokenType infer_type(TypeChecker *typecheck, SymbolTable *table, Node *ex
             Symbol* sym = lookup_table(table, lhs->ast.var_access.name);
             if(!sym) {
                 typecheck_error_at(typecheck, lhs, "'%.*s' nao foi declarado",
-                    (int)lhs->ast.var_access.name.len,
-                    lhs->ast.var_access.name.start);
+                    (int)lhs->ast.var_access.name.len, lhs->ast.var_access.name.start);
                 return TOKEN_UNDEFINED;
             }
 
             if(sym->is_const) {
                 typecheck_error_at(typecheck, expr, "'%s' requer operandos numericos, mas '%.*s' e '%s'",
                     token_to_str(op),
-                    (int)lhs->ast.var_access.name.len,
-                    lhs->ast.var_access.name.start,
+                    (int)lhs->ast.var_access.name.len, lhs->ast.var_access.name.start,
                     token_to_str(sym->type));
                 return TOKEN_UNDEFINED;
             }
 
             if(!is_numeric_type(sym->type)) {
                 typecheck_error_at(typecheck, lhs, "atribuicao a variavel const '%.*s' nao e permitida",
-                    (int)lhs->ast.var_access.name.len,
-                    lhs->ast.var_access.name.start);
+                    (int)lhs->ast.var_access.name.len, lhs->ast.var_access.name.start);
                 return sym->type;
             }
 
             TokenType rhs_type = infer_type(typecheck, table, rhs);
             if(rhs_type != TOKEN_UNDEFINED && !is_numeric_type(rhs_type)) {
                 typecheck_error_at(typecheck, expr, "'%s' requer operandos numericos, lado direito e '%s'",
-                    token_to_str(op),
-                    token_to_str(rhs_type));
+                    token_to_str(op), token_to_str(rhs_type));
             }
 
             return sym->type;
         }
 
-        switch (expr->ast.binary_op.op)
-        {
+        switch (expr->ast.binary_op.op) {
         case TOKEN_OP_EQ_EQ:
         case TOKEN_OP_BANG_EQ:
         case TOKEN_OP_LT:
@@ -622,8 +706,8 @@ static TokenType infer_type(TypeChecker *typecheck, SymbolTable *table, Node *ex
 
         if(left == TOKEN_UNDEFINED || right == TOKEN_UNDEFINED) return TOKEN_UNDEFINED;
         if(left == TOKEN_KEYWORD_DOUBLE || right == TOKEN_KEYWORD_DOUBLE) return TOKEN_KEYWORD_DOUBLE;
-        if(left == TOKEN_KEYWORD_FLOAT || right == TOKEN_KEYWORD_FLOAT) return TOKEN_KEYWORD_FLOAT;
-        if (left == TOKEN_DOUBLE_LIT || right == TOKEN_DOUBLE_LIT) return TOKEN_DOUBLE_LIT;
+        if(left == TOKEN_KEYWORD_FLOAT  || right == TOKEN_KEYWORD_FLOAT)  return TOKEN_KEYWORD_FLOAT;
+        if(left == TOKEN_DOUBLE_LIT     || right == TOKEN_DOUBLE_LIT)     return TOKEN_DOUBLE_LIT;
         if(is_integer_type(left) && is_integer_type(right)) return left;
         if(!type_compatible(left, 0, right, 0)) {
             typecheck_error_at(typecheck, expr, "tipos incompativeis na expressao binaria '%s'",
@@ -632,6 +716,7 @@ static TokenType infer_type(TypeChecker *typecheck, SymbolTable *table, Node *ex
 
         return left;
     }
+
     default:
         return TOKEN_UNDEFINED;
     }
@@ -644,12 +729,14 @@ static void check_condition(TypeChecker *typechecker, SymbolTable *table, Node *
     if(type == TOKEN_UNDEFINED) return;
 
     if(type == TOKEN_KEYWORD_LINK && ptr_lvl == 0) {
-        typecheck_error_at(typechecker, condition, "'%s': 'link' nunca e NULL, use 'link*' para verificar nulidade", context);
+        typecheck_error_at(typechecker, condition,
+            "'%s': 'link' nunca e NULL, use 'link*' para verificar nulidade", context);
         return;
     }
-    
+
     if(type == TOKEN_KEYWORD_VOID && ptr_lvl == 0) {
-        typecheck_error_at(typechecker, condition, "'%s': condicao nao pode ser void", context);
+        typecheck_error_at(typechecker, condition,
+            "'%s': condicao nao pode ser void", context);
         return;
     }
 }
@@ -703,15 +790,13 @@ static void check_func_decl(TypeChecker *typechecker, SymbolTable *table, Node *
     size_t pointer_lvl = node->ast.func_decl.pointer_lvl;
 
     bool is_entry = (name.len == 5 &&
-        name.start[0] == 's' &&
-        name.start[1] == 't' &&
-        name.start[2] == 'a' &&
-        name.start[3] == 'r' &&
+        name.start[0] == 's' && name.start[1] == 't' &&
+        name.start[2] == 'a' && name.start[3] == 'r' &&
         name.start[4] == 't');
-    
+
     if(is_entry) {
         bool valid = (return_type == TOKEN_KEYWORD_VOID && pointer_lvl == 0) ||
-                    (return_type == TOKEN_KEYWORD_LINK && pointer_lvl == 0);
+                     (return_type == TOKEN_KEYWORD_LINK && pointer_lvl == 0);
         if(!valid) {
             typecheck_error_at(typechecker, node,
                 "'start' so pode retornar 'void' ou 'link', recebeu '%s'",
@@ -721,13 +806,12 @@ static void check_func_decl(TypeChecker *typechecker, SymbolTable *table, Node *
 
     NodeList* params = node->ast.func_decl.params;
 
-    if (typechecker->in_func) {
-        typecheck_error_at(typechecker, node, "declaracao de funcao '%.*s' dentro de outra funcao nao e permitido",
-                (int)node->ast.func_decl.name.len,
-                node->ast.func_decl.name.start);
+    if(typechecker->in_func) {
+        typecheck_error_at(typechecker, node,
+            "declaracao de funcao '%.*s' dentro de outra funcao nao e permitido",
+            (int)node->ast.func_decl.name.len, node->ast.func_decl.name.start);
         return;
     }
-
 
     if(lookup_current_table(table, name)) {
         typecheck_error_at(typechecker, node, "funcao '%.*s' ja foi declarada nesse escopo",
@@ -735,16 +819,16 @@ static void check_func_decl(TypeChecker *typechecker, SymbolTable *table, Node *
     }
 
     Symbol* func_sym = insert_table(table, name, SYMBOL_FUNC, pointer_lvl, return_type);
-    func_sym->is_static = node->ast.func_decl.is_static;
+    func_sym->is_static   = node->ast.func_decl.is_static;
+    func_sym->is_variadic = node->ast.func_decl.is_variadic;
 
     if(params && params->count > 0) {
         func_sym->params_count = params->count;
         func_sym->params = (ParamInfo*)arena_alloc(table->arena, sizeof(ParamInfo) * params->count);
-
         for(size_t i = 0; i < params->count; ++i) {
             Node* item = params->items[i];
-            func_sym->params[i].type = item->ast.var_decl.data_type;
-            func_sym ->params[i].pointer_lvl = item->ast.var_decl.pointer_lvl;
+            func_sym->params[i].type       = item->ast.var_decl.data_type;
+            func_sym->params[i].pointer_lvl = item->ast.var_decl.pointer_lvl;
         }
     }
 
@@ -763,8 +847,8 @@ static void check_func_decl(TypeChecker *typechecker, SymbolTable *table, Node *
     }
 
     if(node->ast.func_decl.body)
-            check_node(typechecker, table, node->ast.func_decl.body);
-    
+        check_node(typechecker, table, node->ast.func_decl.body);
+
     pop_scope(table);
 
     typechecker->in_func = false;
@@ -777,13 +861,14 @@ static void check_node(TypeChecker *typechecker, SymbolTable *table, Node *node)
 
     Node* current = node;
     while(current) {
-        switch (current->type)
-        {
+        switch(current->type) {
+
         case NODE_STRUCT: {
             View struct_name = current->ast.struct_decl.name;
             NodeList* fields = current->ast.struct_decl.fields;
 
-            if(lookup_current_table(table, struct_name)) {
+            Symbol* prev_struct = lookup_current_table(table, struct_name);
+            if(prev_struct && prev_struct->category == SYMBOL_STRUCT) {
                 typecheck_error_at(typechecker, current, "struct '%.*s' ja foi declarada nesse escopo",
                         (int)struct_name.len, struct_name.start);
             }
@@ -794,7 +879,8 @@ static void check_node(TypeChecker *typechecker, SymbolTable *table, Node *node)
             size_t total = 0;
             for(size_t i = 0; i < fields->count; ++i) {
                 Node* field = fields->items[i];
-                if((field->type == NODE_UNION || field->type == NODE_STRUCT) && field->ast.struct_decl.name.len == 0)
+                if((field->type == NODE_UNION || field->type == NODE_STRUCT) &&
+                    field->ast.struct_decl.name.len == 0)
                     total += field->ast.struct_decl.fields ? field->ast.struct_decl.fields->count : 0;
                 else
                     total++;
@@ -806,7 +892,6 @@ static void check_node(TypeChecker *typechecker, SymbolTable *table, Node *node)
             size_t fi = 0;
             for(size_t i = 0; i < fields->count; ++i) {
                 Node* field = fields->items[i];
-
                 bool is_embedded = (field->type == NODE_UNION || field->type == NODE_STRUCT);
 
                 if(is_embedded && field->ast.struct_decl.name.len == 0) {
@@ -814,29 +899,30 @@ static void check_node(TypeChecker *typechecker, SymbolTable *table, Node *node)
                     if(!inner) continue;
                     for(size_t j = 0; j < inner->count; ++j) {
                         Node* g = inner->items[j];
-                        sym->fields[fi].name = g->ast.var_decl.name;
-                        sym->fields[fi].type = g->ast.var_decl.data_type;
+                        sym->fields[fi].name       = g->ast.var_decl.name;
+                        sym->fields[fi].type       = g->ast.var_decl.data_type;
                         sym->fields[fi].pointer_lvl = g->ast.var_decl.pointer_lvl;
-                        sym->fields[fi].typename = g->ast.var_decl.typename;
+                        sym->fields[fi].typename   = g->ast.var_decl.typename;
                         fi++;
                     }
                 } else if(is_embedded) {
                     View inner_name = field->ast.struct_decl.name;
-                    sym->fields[fi].name = inner_name;
-                    sym->fields[fi].type = (field->type == NODE_UNION) ? TOKEN_KEYWORD_UNION : TOKEN_KEYWORD_STRUCT;
-                    sym->fields[fi].typename = inner_name;
+                    sym->fields[fi].name       = inner_name;
+                    sym->fields[fi].type       = (field->type == NODE_UNION) ? TOKEN_KEYWORD_UNION : TOKEN_KEYWORD_STRUCT;
+                    sym->fields[fi].typename   = inner_name;
                     sym->fields[fi].pointer_lvl = 0;
                     fi++;
                 } else {
-                    sym->fields[fi].name = field->ast.var_decl.name;
-                    sym->fields[fi].type = field->ast.var_decl.data_type;
-                    sym->fields[fi].typename = field->ast.var_decl.typename;
+                    sym->fields[fi].name       = field->ast.var_decl.name;
+                    sym->fields[fi].type       = field->ast.var_decl.data_type;
+                    sym->fields[fi].typename   = field->ast.var_decl.typename;
                     sym->fields[fi].pointer_lvl = field->ast.var_decl.pointer_lvl;
                     fi++;
                 }
             }
             break;
         }
+
         case NODE_ENUM: {
             NodeList* members = current->ast.enum_decl.members;
             long long next_value = 0;
@@ -869,11 +955,10 @@ static void check_node(TypeChecker *typechecker, SymbolTable *table, Node *node)
                             "valor do membro de enum '%.*s' deve ser inteiro",
                             (int)member_name.len, member_name.start);
                     }
-                    if(member->ast.enum_member.expr->type == NODE_INT_LIT) {
+                    if(member->ast.enum_member.expr->type == NODE_INT_LIT)
                         next_value = member->ast.enum_member.expr->ast.numeric_literal.value;
-                    } else if (member->ast.enum_member.expr->type == NODE_HEXA_LIT){
+                    else if(member->ast.enum_member.expr->type == NODE_HEXA_LIT)
                         next_value = member->ast.enum_member.expr->ast.numeric_literal.value;
-                    }
                 }
                 member_sym->has_const_value = true;
                 member_sym->const_value = next_value;
@@ -881,24 +966,35 @@ static void check_node(TypeChecker *typechecker, SymbolTable *table, Node *node)
             }
             break;
         }
+
         case NODE_TYPEDEF_DECL: {
             View alias = current->ast.typedef_decl.name;
 
-            if(lookup_current_table(table, alias)) {
-                typecheck_error_at(typechecker, current,
-                    "'%.*s' ja foi declarado nesse escopo",
-                    (int)alias.len, alias.start);
+            Symbol* exist = lookup_current_table(table, alias);
+            if(exist && exist->category == SYMBOL_TYPEDEF) {
+                if(current->ast.typedef_decl.type == STRUCT || current->ast.typedef_decl.type == UNION) {
+                    Node* struct_node = current->ast.typedef_decl.struct_node;
+                    if(struct_node->ast.struct_decl.name.len == 0)
+                        struct_node->ast.struct_decl.name = alias;
+                    check_node(typechecker, table, struct_node);
+                } else if(current->ast.typedef_decl.type == ENUM) {
+                    check_node(typechecker, table, current->ast.typedef_decl.enum_node);
+                }
                 break;
             }
 
-            switch (current->ast.typedef_decl.type)
-            {
+            switch(current->ast.typedef_decl.type) {
             case STRUCT:
-            case UNION: 
-                check_node(typechecker, table, current->ast.typedef_decl.struct_node);
-                insert_table(table, alias, SYMBOL_TYPEDEF, 0, current->ast.typedef_decl.type == STRUCT ? TOKEN_KEYWORD_STRUCT : TOKEN_KEYWORD_UNION);
+            case UNION: {
+                Node* struct_node = current->ast.typedef_decl.struct_node;
+                if(struct_node->ast.struct_decl.name.len == 0)
+                    struct_node->ast.struct_decl.name = alias;
+                check_node(typechecker, table, struct_node);
+                insert_table(table, alias, SYMBOL_TYPEDEF, 0,
+                    current->ast.typedef_decl.type == STRUCT ? TOKEN_KEYWORD_STRUCT : TOKEN_KEYWORD_UNION);
                 break;
-            case ENUM: 
+            }
+            case ENUM:
                 check_node(typechecker, table, current->ast.typedef_decl.enum_node);
                 insert_table(table, alias, SYMBOL_TYPEDEF, 0, TOKEN_KEYWORD_ENUM);
                 break;
@@ -908,34 +1004,83 @@ static void check_node(TypeChecker *typechecker, SymbolTable *table, Node *node)
             default:
                 break;
             }
+            break;
         }
+
         case NODE_UNION:
             break;
-        case NODE_VAR_DECL: {
+
+        case NODE_VAR_DECL:
             check_var_decl(typechecker, table, current);
             break;
-        }
-        case NODE_FUNC_DECL: {
+
+        case NODE_FUNC_DECL:
             check_func_decl(typechecker, table, current);
             break;
-        }
+
         case NODE_BLOCK: {
             push_scope(table);
             check_node_list(typechecker, table, current->ast.program.declarations);
             pop_scope(table);
             break;
         }
-        case NODE_PROGRAM: {
-            check_node_list(typechecker, table, current->ast.program.declarations);
+
+        case NODE_SWITCH_STMT: {
+            TokenType subject_type = infer_type(typechecker, table, current->ast.switch_stmt.subject);
+
+            if(subject_type != TOKEN_UNDEFINED && !is_integer_type(subject_type) &&
+            subject_type != TOKEN_KEYWORD_BOOLEAN) {
+                typecheck_error_at(typechecker, current,
+                    "'switch' espera uma expressao inteira ou booleana, recebeu '%s'",
+                    token_to_str(subject_type));
+            }
+
+            bool prev_in_switch = typechecker->in_switch;
+            typechecker->in_switch = true;
+
+            NodeList* cases = current->ast.switch_stmt.cases;
+            long long seen_values[256];
+            size_t seen_count = 0;
+
+            for(size_t i = 0; i < cases->count; ++i) {
+                Node* clause = cases->items[i];
+                Node* value  = clause->ast.case_clause.expr;
+
+                if(value->type != NODE_INT_LIT && value->type != NODE_HEXA_LIT) {
+                    typecheck_error_at(typechecker, value,
+                        "valor de 'case' deve ser uma constante inteira");
+                } else {
+                    long long val = value->ast.numeric_literal.value;
+                    bool repeated = false;
+                    for(size_t j = 0; j < seen_count; ++j) {
+                        if(seen_values[j] == val) { repeated = true; break; }
+                    }
+                    if(repeated) {
+                        typecheck_error_at(typechecker, value,
+                            "valor de 'case' repetido: %lld", val);
+                    } else if(seen_count < 256) {
+                        seen_values[seen_count++] = val;
+                    }
+                }
+
+                check_node(typechecker, table, clause->ast.case_clause.body);
+            }
+
+            typechecker->in_switch = prev_in_switch;
             break;
         }
-        case NODE_IF_STMT: {
+
+        case NODE_PROGRAM:
+            check_node_list(typechecker, table, current->ast.program.declarations);
+            break;
+
+        case NODE_IF_STMT:
             infer_type(typechecker, table, current->ast.if_stmt.condition);
             check_node(typechecker, table, current->ast.if_stmt.then);
             if(current->ast.if_stmt.otherwise)
                 check_node(typechecker, table, current->ast.if_stmt.otherwise);
             break;
-        }
+
         case NODE_WHILE_STMT: {
             check_condition(typechecker, table, current->ast.while_stmt.condition, "while");
             bool prev_in_loop = typechecker->in_loop;
@@ -944,26 +1089,23 @@ static void check_node(TypeChecker *typechecker, SymbolTable *table, Node *node)
             typechecker->in_loop = prev_in_loop;
             break;
         }
+
         case NODE_FOR_STMT: {
             push_scope(table);
-
-            if(current->ast.for_stmt.init) 
+            if(current->ast.for_stmt.init)
                 check_node(typechecker, table, current->ast.for_stmt.init);
-
             if(current->ast.for_stmt.condition)
                 check_condition(typechecker, table, current->ast.for_stmt.condition, "for");
-
             if(current->ast.for_stmt.increment)
                 infer_type(typechecker, table, current->ast.for_stmt.increment);
-
             bool prev_in_loop = typechecker->in_loop;
             typechecker->in_loop = true;
             check_node(typechecker, table, current->ast.for_stmt.body);
             typechecker->in_loop = prev_in_loop;
-
             pop_scope(table);
             break;
         }
+
         case NODE_DO_WHILE_STMT: {
             bool prev_in_loop = typechecker->in_loop;
             typechecker->in_loop = true;
@@ -972,15 +1114,20 @@ static void check_node(TypeChecker *typechecker, SymbolTable *table, Node *node)
             check_condition(typechecker, table, current->ast.while_stmt.condition, "do-while");
             break;
         }
+
         case NODE_BREAK_STMT:
-        case NODE_CONTINUE_STMT: {
-            if(!typechecker->in_loop) {
-                typecheck_error_at(typechecker, current,
-                "'%s' fora de um loop",
-                current->type == NODE_BREAK_STMT ? "break" : "continue");
+            if(!typechecker->in_loop && !typechecker->in_switch) {
+                typecheck_error_at(typechecker, current, "'break' fora de um loop ou switch");
             }
             break;
-        }
+
+        case NODE_CONTINUE_STMT:
+            if(!typechecker->in_loop) {
+                typecheck_error_at(typechecker, current, "'%s' fora de um loop",
+                    current->type == NODE_BREAK_STMT ? "break" : "continue");
+            }
+            break;
+
         case NODE_RETURN_STMT: {
             Node* val = current->ast.return_stmt.value;
             if(!typechecker->in_func) {
@@ -988,13 +1135,13 @@ static void check_node(TypeChecker *typechecker, SymbolTable *table, Node *node)
                 break;
             }
 
-            bool is_void = (typechecker->current_return_type == TOKEN_KEYWORD_VOID && typechecker->current_return_ptr_lvl == 0);
+            bool is_void = (typechecker->current_return_type == TOKEN_KEYWORD_VOID &&
+                            typechecker->current_return_ptr_lvl == 0);
 
             if(!val && is_void) break;
 
             if(val && is_void) {
-                typecheck_error_at(typechecker, current, "funcao '%s' deve retornar um valor",
-                    token_to_str(typechecker->current_return_type));
+                typecheck_error_at(typechecker, current, "funcao void nao pode retornar valor");
                 break;
             }
 
@@ -1006,7 +1153,7 @@ static void check_node(TypeChecker *typechecker, SymbolTable *table, Node *node)
 
             if(typechecker->current_return_type == TOKEN_KEYWORD_LINK) {
                 TokenType actual = infer_type(typechecker, table, val);
-                if (actual != TOKEN_HEXA && actual != TOKEN_KEYWORD_LINK) {
+                if(actual != TOKEN_HEXA && actual != TOKEN_KEYWORD_LINK) {
                     typecheck_error_at(typechecker, current,
                         "funcao 'link' so pode retornar literais hexadecimais ou outro link"
                         " (ex: 0x1A2B), recebeu '%s'",
@@ -1017,8 +1164,8 @@ static void check_node(TypeChecker *typechecker, SymbolTable *table, Node *node)
 
             TokenType actual = infer_type(typechecker, table, val);
             size_t ptr = infer_ptr_lvl(table, val);
-            if(actual != TOKEN_UNDEFINED && !type_compatible(typechecker->current_return_type, typechecker->current_return_ptr_lvl,
-                actual, ptr)) {
+            if(actual != TOKEN_UNDEFINED &&
+               !type_compatible(typechecker->current_return_type, typechecker->current_return_ptr_lvl, actual, ptr)) {
                 char exp_buf[64], got_buf[64];
                 format_type(exp_buf, sizeof(exp_buf), typechecker->current_return_type, typechecker->current_return_ptr_lvl);
                 format_type(got_buf, sizeof(got_buf), actual, ptr);
@@ -1026,13 +1173,13 @@ static void check_node(TypeChecker *typechecker, SymbolTable *table, Node *node)
                     "tipo de retorno incompativel: esperado '%s', recebeu '%s'",
                     exp_buf, got_buf);
             }
-
             break;
         }
-        case NODE_FUNC_CALL: {
+
+        case NODE_FUNC_CALL:
             infer_type(typechecker, table, current);
             break;
-        }
+
         case NODE_BINARY_OP:
         case NODE_UNARY_OP:
         case NODE_POSTFIX_OP:
@@ -1040,6 +1187,7 @@ static void check_node(TypeChecker *typechecker, SymbolTable *table, Node *node)
         case NODE_CAST:
             infer_type(typechecker, table, current);
             break;
+
         default:
             break;
         }
@@ -1052,6 +1200,7 @@ void typecheck_program(TypeChecker *typechecker, SymbolTable *table, Node *progr
     typechecker->error_count = 0;
     typechecker->in_func = false;
     typechecker->in_loop = false;
+    typechecker->in_switch = false;
     typechecker->current_return_type = TOKEN_UNDEFINED;
     typechecker->current_return_ptr_lvl = 0;
     typechecker->diag = diag;

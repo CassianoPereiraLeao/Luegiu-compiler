@@ -11,6 +11,7 @@ typedef struct {
     int error_count;
     bool in_func;
     bool in_loop;
+    bool in_switch;
     TokenType current_return_type;
     size_t current_return_ptr_lvl;
     DiagContext *diag;
@@ -22,3 +23,4 @@ void push_scope(SymbolTable *table);
 void pop_scope(SymbolTable *table);
 void typecheck_program(TypeChecker *typechecker, SymbolTable *table, Node *program, DiagContext *context);
 const char* token_to_str(TokenType type);
+long long decode_char_literal(View text);

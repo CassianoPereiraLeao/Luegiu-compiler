@@ -14,7 +14,8 @@
         T("\n" name_str ":\n"); \
         TAB; T("push rbp"); NL; \
         TAB; T("mov rbp, rsp"); NL; \
-        if ((local_size) > 0) { TAB; T("sub rsp, "); TI(local_size); NL; } \
+        size_t __aligned_local = ((size_t)(local_size) + 15) & ~(size_t)15; \
+        if (__aligned_local > 0) { TAB; T("sub rsp, "); TI(__aligned_local); NL; } \
     } while(0)
 
 #define EPILOG \
@@ -69,10 +70,10 @@ static int unsigned_ato(char* buffer, size_t value) {
 }
 
 void codegen_buffer_init(CodeGenBuffer *buffer, Arena *arena, size_t initial_capacity) {
-    buffer->arena = arena;
+    buffer->arena    = arena;
     buffer->capacity = initial_capacity ? initial_capacity : 4096;
-    buffer->len = 0;
-    buffer->data = (char*)arena_alloc(arena, buffer->capacity);
+    buffer->len      = 0;
+    buffer->data     = (char*)arena_alloc(arena, buffer->capacity);
 }
 
 static void buffer_grow(CodeGenBuffer *buffer, size_t extra) {
@@ -81,7 +82,7 @@ static void buffer_grow(CodeGenBuffer *buffer, size_t extra) {
     while(new_cap < buffer->len + extra) new_cap *= 2;
     char* nd = (char*)arena_alloc(buffer->arena, new_cap);
     memcopy(nd, buffer->data, buffer->len);
-    buffer->data = nd;
+    buffer->data     = nd;
     buffer->capacity = new_cap;
 }
 
@@ -123,6 +124,17 @@ static void loop_pop(CodeGen *codegen) {
     if(codegen->loop_depth > 0) codegen->loop_depth--;
 }
 
+static void break_push(CodeGen *codegen, BreakCtxType type, int label_end) {
+    if(codegen->break_depth >= CODEGEN_MAX_BREAK_DEPTH) return;
+    codegen->break_stack[codegen->break_depth].type = type;
+    codegen->break_stack[codegen->break_depth].label_end = label_end;
+    codegen->break_depth++;
+}
+
+static void break_pop(CodeGen *codegen) {
+    if(codegen->break_depth > 0) codegen->break_depth--;
+}
+
 static void emit_label_ref(CodeGen *codegen, int id) { T("__L"); TI(id); }
 static int  new_label(CodeGen *codegen) { return codegen->label_counter++; }
 
@@ -132,8 +144,10 @@ static size_t codegen_struct_size(CodeGen *codegen, View typename) {
 
     size_t total = 0;
     for(size_t i = 0; i < sym->fields_count; ++i) {
-        size_t field_size = (sym->fields[i].pointer_lvl > 0) ? 8 : (size_t)bytes_data_value(sym->fields[i].type);
-        total += (field_size + 7)& ~7;
+        size_t field_size = (sym->fields[i].pointer_lvl > 0)
+                            ? 8
+                            : (size_t)bytes_data_value(sym->fields[i].type);
+        total += (field_size + 7) & ~(size_t)7;
     }
     return total ? total : 8;
 }
@@ -144,10 +158,12 @@ static size_t codegen_union_size(CodeGen *codegen, View typename) {
 
     size_t max = 0;
     for(size_t i = 0; i < sym->fields_count; ++i) {
-        size_t field_size = (sym->fields[i].pointer_lvl > 0) ? 8 : (size_t)bytes_data_value(sym->fields[i].type);
+        size_t field_size = (sym->fields[i].pointer_lvl > 0)
+                            ? 8
+                            : (size_t)bytes_data_value(sym->fields[i].type);
         if(field_size > max) max = field_size;
     }
-    return max ? ((max + 7)& ~(size_t)7) : 8;
+    return max ? ((max + 7) & ~(size_t)7) : 8;
 }
 
 static int codegen_field_offset(CodeGen *codegen, View typename, View fieldname, bool is_union) {
@@ -158,20 +174,17 @@ static int codegen_field_offset(CodeGen *codegen, View typename, View fieldname,
     int off = 0;
     for(size_t i = 0; i < sym->fields_count; ++i) {
         FieldInfo* info = &sym->fields[i];
-        size_t field_size = (info->pointer_lvl > 0) ? 8 : (size_t)bytes_data_value(info->type);
-        size_t align = (field_size + 7)& ~(size_t)7;
+        size_t field_size = (info->pointer_lvl > 0)
+                            ? 8
+                            : (size_t)bytes_data_value(info->type);
+        size_t align = (field_size + 7) & ~(size_t)7;
 
         if(info->name.len == fieldname.len) {
             bool equals = true;
             for(size_t j = 0; j < fieldname.len; ++j) {
-                if(info->name.start[j] != fieldname.start[j]) {
-                    equals = false;
-                    break;
-                }
+                if(info->name.start[j] != fieldname.start[j]) { equals = false; break; }
             }
-            if(equals) {
-                return off;
-            }
+            if(equals) return off;
         }
         off += (int)align;
     }
@@ -186,14 +199,10 @@ static size_t codegen_field_size(CodeGen *codegen, View typename, View fieldname
         if(info->name.len == fieldname.len) {
             bool equals = true;
             for(size_t j = 0; j < fieldname.len; ++j) {
-                if(fieldname.start[j] != info->name.start[j]) {
-                    equals = false;
-                    break;
-                }
+                if(fieldname.start[j] != info->name.start[j]) { equals = false; break; }
             }
-            if(equals) {
+            if(equals)
                 return (info->pointer_lvl > 0) ? 8 : (size_t)bytes_data_value(info->type);
-            }
         }
     }
     return 8;
@@ -204,24 +213,25 @@ static CodeGenLocal* local_find(CodeGen *codegen, View name) {
         if(l->name.len == name.len) {
             bool eq = true;
             for(size_t i = 0; i < name.len; ++i)
-                if(l->name.start[i] != name.start[i]) { eq=false; break; }
+                if(l->name.start[i] != name.start[i]) { eq = false; break; }
             if(eq) return l;
         }
     }
     return NULL;
 }
 
-static int local_alloc(CodeGen *codegen, View name, View typename, size_t bytes, TokenType type, size_t pointer_lvl) {
+static int local_alloc(CodeGen *codegen, View name, View typename,
+                        size_t bytes, TokenType type, size_t pointer_lvl) {
     size_t align = (bytes + 7) & ~(size_t)7;
     codegen->stack_top -= (int)align;
     CodeGenLocal* local = (CodeGenLocal*)arena_alloc(codegen->arena, sizeof(CodeGenLocal));
-    local->name   = name;
-    local->offset = codegen->stack_top;
+    local->name        = name;
+    local->offset      = codegen->stack_top;
     local->pointer_lvl = pointer_lvl;
-    local->type = type;
-    local->typename = typename;
-    local->next   = codegen->locals;
-    codegen->locals = local;
+    local->type        = type;
+    local->typename    = typename;
+    local->next        = codegen->locals;
+    codegen->locals    = local;
     return codegen->stack_top;
 }
 
@@ -230,7 +240,7 @@ static size_t string_intern(CodeGen *codegen, View text) {
         if(s->text.len == text.len) {
             bool eq = true;
             for(size_t i = 0; i < text.len; ++i)
-                if(s->text.start[i] != text.start[i]) { eq=false; break; }
+                if(s->text.start[i] != text.start[i]) { eq = false; break; }
             if(eq) return s->index;
         }
     }
@@ -245,23 +255,23 @@ static size_t string_intern(CodeGen *codegen, View text) {
 static void emit_strings(CodeGen *codegen) {
     for(CodeGenString* s = codegen->strings; s; s = s->next) {
         D("__str"); codegen_buffer_writeu(&codegen->sec_data, s->index); D(": db ");
-        const char* content = s->text.start + 1;
-        size_t content_len  = s->text.len - 2;
+        const char* content     = s->text.start + 1;
+        size_t      content_len = s->text.len - 2;
         bool first = true;
         while(content_len > 0) {
             if(!first) D(", ");
             first = false;
             if(*content == '\\' && content_len >= 2) {
-                char esc = *(content+1);
-                int byte = 0;
+                char esc  = *(content + 1);
+                int  byte = 0;
                 switch(esc) {
-                case 'n':  byte=10;    break;
-                case 't':  byte=9;     break;
-                case 'r':  byte=13;    break;
-                case '0':  byte=0;     break;
-                case '\\': byte='\\';  break;
-                case '"':  byte='"';   break;
-                default:   byte=esc;   break;
+                case 'n':  byte = 10;   break;
+                case 't':  byte = 9;    break;
+                case 'r':  byte = 13;   break;
+                case '0':  byte = 0;    break;
+                case '\\': byte = '\\'; break;
+                case '"':  byte = '"';  break;
+                default:   byte = esc;  break;
                 }
                 codegen_buffer_writeu(&codegen->sec_data, (size_t)byte);
                 content += 2; content_len -= 2;
@@ -351,6 +361,7 @@ static void emit_prologue(CodeGen *codegen, int local_bytes) {
         int aligned = (local_bytes + 15) & ~15;
         TAB; T("sub rsp, "); TI(aligned); NL;
     }
+
     TAB; T("sub rsp, "); TI(WIN64_SHADOW_SPACE); NL;
 }
 
@@ -362,69 +373,79 @@ static void emit_epilogue(CodeGen *codegen) {
 
 static int bytes_data_value(TokenType type) {
     switch(type) {
-    case TOKEN_KEYWORD_SMALL:   return 1;
-    case TOKEN_KEYWORD_BOOLEAN: return 1;
-    case TOKEN_KEYWORD_INT:     return 4;
-    case TOKEN_KEYWORD_BIG:     return 8;
-    case TOKEN_KEYWORD_CHAR:    return 1;
-    case TOKEN_KEYWORD_UTF8CHAR: return 1;
+    case TOKEN_KEYWORD_SMALL:     return 1;
+    case TOKEN_KEYWORD_BOOLEAN:   return 1;
+    case TOKEN_KEYWORD_INT:       return 4;
+    case TOKEN_KEYWORD_BIG:       return 8;
+    case TOKEN_KEYWORD_CHAR:      return 1;
+    case TOKEN_KEYWORD_UTF8CHAR:  return 1;
     case TOKEN_KEYWORD_UTF16CHAR: return 2;
     case TOKEN_KEYWORD_INT8:
-    case TOKEN_KEYWORD_UINT8:   return 1;
+    case TOKEN_KEYWORD_UINT8:     return 1;
     case TOKEN_KEYWORD_INT16:
-    case TOKEN_KEYWORD_UINT16:  return 2;
+    case TOKEN_KEYWORD_UINT16:    return 2;
     case TOKEN_KEYWORD_INT32:
-    case TOKEN_KEYWORD_UINT32:  return 4;
+    case TOKEN_KEYWORD_UINT32:    return 4;
     case TOKEN_KEYWORD_INT64:
-    case TOKEN_KEYWORD_UINT64:  return 8;
-    case TOKEN_KEYWORD_FLOAT:   return 4;
-    case TOKEN_KEYWORD_DOUBLE:  return 8;
-    case TOKEN_KEYWORD_LINK:   return 8;
-    default:                    return 8;
+    case TOKEN_KEYWORD_UINT64:    return 8;
+    case TOKEN_KEYWORD_FLOAT:     return 4;
+    case TOKEN_KEYWORD_DOUBLE:    return 8;
+    case TOKEN_KEYWORD_LINK:      return 8;
+    default:                      return 8;
     }
 }
 
-static int collect_frame_size(Node *block) {
+static int collect_frame_size(CodeGen *codegen, Node *block) {
     if(!block) return 0;
-    
+
     if(block->type != NODE_BLOCK && block->type != NODE_PROGRAM)
         return 0;
 
-    int total = 0;
+    int      total = 0;
     NodeList* stmts = block->ast.program.declarations;
     if(!stmts) return 0;
+
     for(size_t i = 0; i < stmts->count; ++i) {
         Node* s = stmts->items[i];
         if(!s) continue;
-        switch (s->type)
-        {
-        case NODE_VAR_DECL:
+        switch(s->type) {
+        case NODE_VAR_DECL: {
             size_t bytes = 0;
             if(s->ast.var_decl.pointer_lvl > 0) {
                 bytes = 8;
             } else if(s->ast.var_decl.data_type == TOKEN_KEYWORD_STRUCT) {
-                bytes = 64;
+                bytes = codegen_struct_size(codegen, s->ast.var_decl.typename);
+            } else if(s->ast.var_decl.data_type == TOKEN_KEYWORD_UNION) {
+                bytes = codegen_union_size(codegen, s->ast.var_decl.typename);
             } else {
                 bytes = (size_t)bytes_data_value(s->ast.var_decl.data_type);
             }
-            total += (int)((bytes + 7)& ~(size_t)7);
+            total += (int)((bytes + 7) & ~(size_t)7);
             break;
+        }
         case NODE_BLOCK:
-            total += collect_frame_size(s);
+            total += collect_frame_size(codegen, s);
             break;
         case NODE_IF_STMT:
-            total += collect_frame_size(s->ast.if_stmt.then);
-            total += collect_frame_size(s->ast.if_stmt.otherwise);
+            total += collect_frame_size(codegen, s->ast.if_stmt.then);
+            total += collect_frame_size(codegen, s->ast.if_stmt.otherwise);
             break;
         case NODE_WHILE_STMT:
         case NODE_DO_WHILE_STMT:
-            total += collect_frame_size(s->ast.while_stmt.body);
+            total += collect_frame_size(codegen, s->ast.while_stmt.body);
             break;
         case NODE_FOR_STMT:
-            if(s->ast.for_stmt.init && s->ast.for_stmt.init->type == NODE_VAR_DECL) {
+            if(s->ast.for_stmt.init &&
+                s->ast.for_stmt.init->type == NODE_VAR_DECL) {
                 total += 8;
             }
-            total += collect_frame_size(s->ast.for_stmt.body);
+            total += collect_frame_size(codegen, s->ast.for_stmt.body);
+            break;
+        case NODE_SWITCH_STMT:
+            for(size_t c = 0; c < s->ast.switch_stmt.cases->count; ++c) {
+                Node* clause = s->ast.switch_stmt.cases->items[c];
+                total += collect_frame_size(codegen, clause->ast.case_clause.body);
+            }
             break;
         default:
             break;
@@ -433,13 +454,123 @@ static int collect_frame_size(Node *block) {
     return total;
 }
 
+static long long switch_const_value(CodeGen *codegen, Node *case_expr) {
+    if(case_expr->type == NODE_INT_LIT || case_expr->type == NODE_HEXA_LIT) {
+        return case_expr->ast.numeric_literal.value;
+    }
+
+    if(case_expr->type == NODE_CHAR_LIT) {
+        return decode_char_literal(case_expr->ast.string_literal.text);
+    }
+
+    if(case_expr->type == NODE_VAR_ACCESS) {
+        Symbol* sym = lookup_table(codegen->table, case_expr->ast.var_access.name);
+        if(sym && sym->has_const_value) {
+            return sym->const_value;
+        }
+    }
+
+    return 0;
+}
+
+static void codegen_switch_jumptable(CodeGen *codegen, NodeList *cases,
+                                        long long min_val, long long max_val,
+                                        int label_end, int *case_labels) {
+    size_t range = (size_t)(max_val - min_val + 1);
+
+    TAB; T("mov rbx, rax"); NL;
+    TAB; T("sub rbx, "); TI(min_val); NL;
+    TAB; T("cmp rbx, "); TI((long long)range); NL;
+    TAB; T("jae "); emit_label_ref(codegen, label_end); NL;
+
+    int label_table = new_label(codegen);
+
+    TAB; T("lea rax, [rel __L"); TI(label_table); T("]"); NL;
+    TAB; T("mov rax, [rax + rbx*8]"); NL;
+    TAB; T("jmp rax"); NL;
+
+    D("__L"); codegen_buffer_writeu(&codegen->sec_data, (size_t)label_table); D(":\n");
+
+    for(size_t i = 0; i < range; ++i) {
+        long long want = min_val + (long long)i;
+        int target = label_end;
+
+        for(size_t c = 0; c < cases->count; ++c) {
+            Node* clause = cases->items[c];
+            if(switch_const_value(codegen, clause->ast.case_clause.expr) == want) {
+                target = case_labels[c];
+                break;
+            }
+        }
+
+        D("    dq __L"); codegen_buffer_writeu(&codegen->sec_data, (size_t)target); DNL;
+    }
+}
+
+static void codegen_switch_chain(CodeGen *codegen, NodeList *cases,
+                                  int label_end, int *case_labels) {
+    TAB; T("mov rbx, rax"); NL;
+
+    for(size_t c = 0; c < cases->count; ++c) {
+        Node* clause = cases->items[c];
+        long long cv = switch_const_value(codegen, clause->ast.case_clause.expr);
+        TAB; T("cmp rbx, "); TI(cv); NL;
+        TAB; T("je "); emit_label_ref(codegen, case_labels[c]); NL;
+    }
+
+    TAB; T("jmp "); emit_label_ref(codegen, label_end); NL;
+}
+
+static void codegen_switch(CodeGen *codegen, Node *node) {
+    NodeList* cases = node->ast.switch_stmt.cases;
+    if(!cases || cases->count == 0) return;
+
+    int label_end = new_label(codegen);
+
+    int* case_labels = (int*)arena_alloc(codegen->arena, sizeof(int) * cases->count);
+    for(size_t i = 0; i < cases->count; ++i)
+        case_labels[i] = new_label(codegen);
+
+    break_push(codegen, BREAK_CTX_SWITCH, label_end);
+
+    codegen_expr(codegen, node->ast.switch_stmt.subject);
+
+    long long min_val = switch_const_value(codegen, ((Node*)cases->items[0])->ast.case_clause.expr);
+    long long max_val = min_val;
+    for(size_t i = 1; i < cases->count; ++i) {
+        long long v = switch_const_value(codegen, ((Node*)cases->items[i])->ast.case_clause.expr);
+        if(v < min_val) min_val = v;
+        if(v > max_val) max_val = v;
+    }
+
+    long long range = max_val - min_val + 1;
+    bool use_jumptable = (range > 0) && (range <= (long long)cases->count * 2) && (range <= 4096);
+
+    if(use_jumptable)
+        codegen_switch_jumptable(codegen, cases, min_val, max_val, label_end, case_labels);
+    else
+        codegen_switch_chain(codegen, cases, label_end, case_labels);
+
+    for(size_t i = 0; i < cases->count; ++i) {
+        Node* clause = cases->items[i];
+        emit_label_ref(codegen, case_labels[i]); T(":"); NL;
+        codegen_stmt(codegen, clause->ast.case_clause.body);
+    }
+
+    emit_label_ref(codegen, label_end); T(":"); NL;
+
+    break_pop(codegen);
+}
+
 static bool emit_lvalue_addr(CodeGen *codegen, Node *expr) {
     if(!expr) return false;
+
     if(expr->type == NODE_VAR_ACCESS) {
         CodeGenLocal* local = local_find(codegen, expr->ast.var_access.name);
         if(local) { emit_lea_local(codegen, local->offset); return true; }
         TAB; T("lea rax, [rel __g_");
-        codegen_buffer_write(&codegen->sec_text, expr->ast.var_access.name.start, expr->ast.var_access.name.len);
+        codegen_buffer_write(&codegen->sec_text,
+            expr->ast.var_access.name.start, expr->ast.var_access.name.len);
         T("]"); NL;
         return true;
     }
@@ -449,29 +580,28 @@ static bool emit_lvalue_addr(CodeGen *codegen, Node *expr) {
         return true;
     }
 
-    if(expr->type == NODE_BINARY_OP && (expr->ast.binary_op.op == TOKEN_DOT || expr->ast.binary_op.op == TOKEN_OP_ARROW)) {
-        Node* lhs = expr->ast.binary_op.left;
-        Node* rhs = expr->ast.binary_op.right;
-        View field_name = rhs->ast.var_access.name;
+    if(expr->type == NODE_BINARY_OP &&
+        (expr->ast.binary_op.op == TOKEN_DOT ||
+        expr->ast.binary_op.op == TOKEN_OP_ARROW)) {
+        Node* lhs        = expr->ast.binary_op.left;
+        Node* rhs        = expr->ast.binary_op.right;
+        View  field_name = rhs->ast.var_access.name;
 
-        View typename = {0};
+        View typename        = {0};
         bool is_union_access = false;
+
         if(lhs->type == NODE_VAR_ACCESS) {
             CodeGenLocal* local = local_find(codegen, lhs->ast.var_access.name);
             if(local) {
                 typename = local->typename;
             } else {
                 Symbol* sym = lookup_table(codegen->table, lhs->ast.var_access.name);
-                if(sym) {
-                    typename = local->typename;
-                }
+                if(sym) typename = sym->typename;
             }
         }
 
         Symbol* sym = lookup_table(codegen->table, lhs->ast.var_access.name);
-        if(sym) {
-            is_union_access = (sym->type == TOKEN_KEYWORD_UNION);
-        }
+        if(sym) is_union_access = (sym->type == TOKEN_KEYWORD_UNION);
 
         int field_off = codegen_field_offset(codegen, typename, field_name, is_union_access);
 
@@ -483,7 +613,7 @@ static bool emit_lvalue_addr(CodeGen *codegen, Node *expr) {
                 } else {
                     codegen_expr(codegen, lhs);
                 }
-            } 
+            }
         } else {
             codegen_expr(codegen, lhs);
         }
@@ -495,12 +625,19 @@ static bool emit_lvalue_addr(CodeGen *codegen, Node *expr) {
     }
 
     if(expr->type == NODE_ARRAY) {
-        int element_size = 8;
         Node* base = expr->ast.binary_op.left;
+        int   element_size = 8;
+
         if(base->type == NODE_VAR_ACCESS) {
-            Symbol* sym = lookup_table(codegen->table, base->ast.var_access.name);
-            if(sym && sym->pointer_lvl == 1) {
-                element_size = bytes_data_value(sym->type);
+            CodeGenLocal* local = local_find(codegen, base->ast.var_access.name);
+            if(local) {
+                element_size = (local->pointer_lvl > 0)
+                                ? bytes_data_value(local->type)
+                                : 8;
+            } else {
+                Symbol* sym = lookup_table(codegen->table, base->ast.var_access.name);
+                if(sym && sym->pointer_lvl >= 1)
+                    element_size = bytes_data_value(sym->type);
             }
         }
 
@@ -513,6 +650,7 @@ static bool emit_lvalue_addr(CodeGen *codegen, Node *expr) {
         TAB; T("add rax, rbx"); NL;
         return true;
     }
+
     return false;
 }
 
@@ -525,29 +663,17 @@ static void codegen_expr(CodeGen *codegen, Node *expr) {
         emit_mov_reg_imm(codegen, "rax", expr->ast.numeric_literal.value);
         break;
 
-    case NODE_HEXA_LIT: {
+    case NODE_HEXA_LIT:
         emit_mov_reg_imm(codegen, "rax", expr->ast.numeric_literal.value);
         break;
-    }
 
     case NODE_DOUBLE_LIT:
         emit_mov_reg_imm(codegen, "rax", (long long)expr->ast.numeric_literal.value);
         break;
 
     case NODE_CHAR_LIT: {
-        const char* p = expr->ast.string_literal.text.start;
-        size_t len = expr->ast.string_literal.text.len;
-        char byte = 0;
-        if(len >= 3 && p[0]=='\'' && p[len-1]=='\'') {
-            if(p[1]=='\\' && len==4) {
-                switch(p[2]) {
-                case 'n': byte='\n'; break; case 't': byte='\t'; break;
-                case 'r': byte='\r'; break; case '0': byte='\0'; break;
-                default:  byte=p[2]; break;
-                }
-            } else byte = p[1];
-        }
-        emit_mov_reg_imm(codegen, "rax", (long long)(unsigned char)byte);
+        long long byte = decode_char_literal(expr->ast.string_literal.text);
+        emit_mov_reg_imm(codegen, "rax", byte);
         break;
     }
 
@@ -560,6 +686,7 @@ static void codegen_expr(CodeGen *codegen, Node *expr) {
     case NODE_VAR_ACCESS: {
         CodeGenLocal* local = local_find(codegen, expr->ast.var_access.name);
         if(local) { emit_load_local(codegen, local->offset); break; }
+
         Symbol* sym = lookup_table(codegen->table, expr->ast.var_access.name);
         if(sym && sym->has_const_value) {
             emit_mov_reg_imm(codegen, "rax", sym->const_value);
@@ -567,7 +694,8 @@ static void codegen_expr(CodeGen *codegen, Node *expr) {
         }
 
         TAB; T("mov rax, [rel __g_");
-        codegen_buffer_write(&codegen->sec_text, expr->ast.var_access.name.start, expr->ast.var_access.name.len);
+        codegen_buffer_write(&codegen->sec_text,
+            expr->ast.var_access.name.start, expr->ast.var_access.name.len);
         T("]"); NL;
         break;
     }
@@ -601,10 +729,10 @@ static void codegen_expr(CodeGen *codegen, Node *expr) {
         case TOKEN_OP_PLUS_PLUS: {
             Node* operand = expr->ast.unary_op.operand;
             if(operand->type == NODE_VAR_ACCESS) {
-                CodeGenLocal* local = local_find(codegen, operand->ast.var_access.name);
-                if(local) {
-                    TAB; T("inc qword [rbp"); TI(local->offset); T("]"); NL;
-                    emit_load_local(codegen, local->offset);
+                CodeGenLocal* loc = local_find(codegen, operand->ast.var_access.name);
+                if(loc) {
+                    TAB; T("inc qword [rbp"); TI(loc->offset); T("]"); NL;
+                    emit_load_local(codegen, loc->offset);
                 }
             }
             break;
@@ -612,10 +740,10 @@ static void codegen_expr(CodeGen *codegen, Node *expr) {
         case TOKEN_OP_MINUS_MINUS: {
             Node* operand = expr->ast.unary_op.operand;
             if(operand->type == NODE_VAR_ACCESS) {
-                CodeGenLocal* local = local_find(codegen, operand->ast.var_access.name);
-                if(local) {
-                    TAB; T("dec qword [rbp"); TI(local->offset); T("]"); NL;
-                    emit_load_local(codegen, local->offset);
+                CodeGenLocal* loc = local_find(codegen, operand->ast.var_access.name);
+                if(loc) {
+                    TAB; T("dec qword [rbp"); TI(loc->offset); T("]"); NL;
+                    emit_load_local(codegen, loc->offset);
                 }
             }
             break;
@@ -628,14 +756,14 @@ static void codegen_expr(CodeGen *codegen, Node *expr) {
     case NODE_POSTFIX_OP: {
         Node* operand = expr->ast.unary_op.operand;
         if(operand->type == NODE_VAR_ACCESS) {
-            CodeGenLocal* local = local_find(codegen, operand->ast.var_access.name);
-            if(local) {
-                emit_load_local(codegen, local->offset); 
+            CodeGenLocal* loc = local_find(codegen, operand->ast.var_access.name);
+            if(loc) {
+                emit_load_local(codegen, loc->offset);
                 TAB; T("push rax"); NL;
                 if(expr->ast.unary_op.op == TOKEN_OP_PLUS_PLUS)
-                    { TAB; T("inc qword [rbp"); TI(local->offset); T("]"); NL; }
+                    { TAB; T("inc qword [rbp"); TI(loc->offset); T("]"); NL; }
                 else
-                    { TAB; T("dec qword [rbp"); TI(local->offset); T("]"); NL; }
+                    { TAB; T("dec qword [rbp"); TI(loc->offset); T("]"); NL; }
                 TAB; T("pop rax"); NL;
             }
         }
@@ -659,12 +787,14 @@ static void codegen_expr(CodeGen *codegen, Node *expr) {
             }
 
             if(lhs->type == NODE_VAR_ACCESS) {
-                CodeGenLocal* local = local_find(codegen, lhs->ast.var_access.name);
-                if(local) { emit_store_local(codegen, local->offset); break; }
+                CodeGenLocal* loc = local_find(codegen, lhs->ast.var_access.name);
+                if(loc) { emit_store_local(codegen, loc->offset); break; }
 
                 TAB; T("mov [rel __g_");
-                codegen_buffer_write(&codegen->sec_text, lhs->ast.var_access.name.start, lhs->ast.var_access.name.len);
+                codegen_buffer_write(&codegen->sec_text,
+                    lhs->ast.var_access.name.start, lhs->ast.var_access.name.len);
                 T("], rax"); NL;
+                break;
             }
 
             if(lhs->type == NODE_ARRAY) {
@@ -673,9 +803,12 @@ static void codegen_expr(CodeGen *codegen, Node *expr) {
                 emit_mov_reg_reg(codegen, "rbx", "rax");
                 TAB; T("pop rax"); NL;
                 TAB; T("mov [rbx], rax"); NL;
+                break;
             }
 
-            if(lhs->type == NODE_BINARY_OP && (lhs->ast.binary_op.op == TOKEN_DOT || lhs->ast.binary_op.op == TOKEN_OP_ARROW)) {
+            if(lhs->type == NODE_BINARY_OP &&
+                (lhs->ast.binary_op.op == TOKEN_DOT ||
+                lhs->ast.binary_op.op == TOKEN_OP_ARROW)) {
                 TAB; T("push rax"); NL;
                 emit_lvalue_addr(codegen, lhs);
                 emit_mov_reg_reg(codegen, "rbx", "rax");
@@ -686,17 +819,17 @@ static void codegen_expr(CodeGen *codegen, Node *expr) {
         }
 
         if(op == TOKEN_DOT || op == TOKEN_OP_ARROW) {
-            Node* lhs = expr->ast.binary_op.left;
-            Node* rhs = expr->ast.binary_op.right;
-            View field_name = rhs->ast.var_access.name;
+            Node* lhs        = expr->ast.binary_op.left;
+            Node* rhs        = expr->ast.binary_op.right;
+            View  field_name = rhs->ast.var_access.name;
 
-            View typename = {0};
+            View typename        = {0};
             bool is_union_access = false;
 
             if(lhs->type == NODE_VAR_ACCESS) {
-                CodeGenLocal* local = local_find(codegen, lhs->ast.var_access.name);
-                if(local) {
-                    typename = local->typename;
+                CodeGenLocal* loc = local_find(codegen, lhs->ast.var_access.name);
+                if(loc) {
+                    typename = loc->typename;
                 } else {
                     Symbol* sym = lookup_table(codegen->table, lhs->ast.var_access.name);
                     if(sym) typename = sym->typename;
@@ -706,14 +839,14 @@ static void codegen_expr(CodeGen *codegen, Node *expr) {
             Symbol* sym = lookup_table(codegen->table, typename);
             if(sym) is_union_access = (sym->type == TOKEN_KEYWORD_UNION);
 
-            int field_off = codegen_field_offset(codegen, typename, field_name, is_union_access);
+            int    field_off  = codegen_field_offset(codegen, typename, field_name, is_union_access);
             size_t field_size = codegen_field_size(codegen, typename, field_name);
 
             if(op == TOKEN_DOT) {
                 if(lhs->type == NODE_VAR_ACCESS) {
-                    CodeGenLocal* local = local_find(codegen, lhs->ast.var_access.name);
-                    if(local) {
-                        emit_lea_local(codegen, local->offset);
+                    CodeGenLocal* loc = local_find(codegen, lhs->ast.var_access.name);
+                    if(loc) {
+                        emit_lea_local(codegen, loc->offset);
                     } else {
                         TAB; T("lea rax, [rel __g_");
                         codegen_buffer_write(&codegen->sec_text,
@@ -732,29 +865,33 @@ static void codegen_expr(CodeGen *codegen, Node *expr) {
                 TAB; T("add rax, "); TI(field_off); NL;
             }
 
-            switch (field_size)
-            {
-            case 1: TAB; T("movzx rax, byte [rax]"); NL; break;
-            case 2: TAB; T("movzx rax, word [rax]"); NL; break;
-            case 4: TAB; T("movsxd rax, dword [rax]"); NL; break;
-            default: TAB; T("mov rax, [rax]"); NL; break;
+            switch(field_size) {
+            case 1: TAB; T("movzx rax, byte [rax]");    NL; break;
+            case 2: TAB; T("movzx rax, word [rax]");    NL; break;
+            case 4: TAB; T("movsxd rax, dword [rax]");  NL; break;
+            default: TAB; T("mov rax, [rax]");           NL; break;
             }
+            break;
         }
 
-        if(op == TOKEN_OP_PLUS_EQ || op == TOKEN_OP_MINUS_EQ ||
-            op == TOKEN_OP_MOD_EQ  || op == TOKEN_OP_STAR_EQ  ||
+        if(op == TOKEN_OP_PLUS_EQ  || op == TOKEN_OP_MINUS_EQ ||
+            op == TOKEN_OP_MOD_EQ   || op == TOKEN_OP_STAR_EQ  ||
             op == TOKEN_OP_SLASH_EQ) {
             Node* lhs = expr->ast.binary_op.left;
-            CodeGenLocal* local = (lhs->type == NODE_VAR_ACCESS)
-                                    ? local_find(codegen, lhs->ast.var_access.name) : NULL;
-            if(local) {
+            CodeGenLocal* loc = (lhs->type == NODE_VAR_ACCESS)
+                                ? local_find(codegen, lhs->ast.var_access.name)
+                                : NULL;
+            if(loc) {
                 codegen_expr(codegen, expr->ast.binary_op.right);
                 emit_mov_reg_reg(codegen, "rbx", "rax");
-                emit_load_local(codegen, local->offset);
+                emit_load_local(codegen, loc->offset);
                 switch(op) {
-                case TOKEN_OP_PLUS_EQ:  TAB; T("add rax, rbx"); NL; break;
-                case TOKEN_OP_MINUS_EQ: TAB; T("sub rax, rbx"); NL; break;
-                case TOKEN_OP_STAR_EQ:  TAB; T("imul rax, rbx"); NL; break;
+                case TOKEN_OP_PLUS_EQ:
+                    TAB; T("add rax, rbx"); NL; break;
+                case TOKEN_OP_MINUS_EQ:
+                    TAB; T("sub rax, rbx"); NL; break;
+                case TOKEN_OP_STAR_EQ:
+                    TAB; T("imul rax, rbx"); NL; break;
                 case TOKEN_OP_SLASH_EQ:
                     TAB; T("cqo"); NL; TAB; T("idiv rbx"); NL; break;
                 case TOKEN_OP_MOD_EQ:
@@ -762,7 +899,7 @@ static void codegen_expr(CodeGen *codegen, Node *expr) {
                     emit_mov_reg_reg(codegen, "rax", "rdx"); break;
                 default: break;
                 }
-                emit_store_local(codegen, local->offset);
+                emit_store_local(codegen, loc->offset);
             }
             break;
         }
@@ -774,12 +911,12 @@ static void codegen_expr(CodeGen *codegen, Node *expr) {
         TAB; T("pop rax"); NL;
 
         switch(op) {
-        case TOKEN_OP_PLUS:   TAB; T("add rax, rbx"); NL; break;
-        case TOKEN_OP_MINUS:  TAB; T("sub rax, rbx"); NL; break;
-        case TOKEN_OP_STAR:   TAB; T("imul rax, rbx"); NL; break;
-        case TOKEN_BIT_AND:   TAB; T("and rax, rbx"); NL; break;
-        case TOKEN_BIT_OR:    TAB; T("or rax, rbx"); NL; break;
-        case TOKEN_OP_XOR:    TAB; T("xor rax, rbx"); NL; break;
+        case TOKEN_OP_PLUS:    TAB; T("add rax, rbx"); NL; break;
+        case TOKEN_OP_MINUS:   TAB; T("sub rax, rbx"); NL; break;
+        case TOKEN_OP_STAR:    TAB; T("imul rax, rbx"); NL; break;
+        case TOKEN_BIT_AND:    TAB; T("and rax, rbx"); NL; break;
+        case TOKEN_BIT_OR:     TAB; T("or rax, rbx"); NL; break;
+        case TOKEN_OP_XOR:     TAB; T("xor rax, rbx"); NL; break;
         case TOKEN_OP_SLASH:
             TAB; T("cqo"); NL; TAB; T("idiv rbx"); NL; break;
         case TOKEN_OP_MOD:
@@ -808,15 +945,13 @@ static void codegen_expr(CodeGen *codegen, Node *expr) {
             TAB; T("cmp rax, rbx"); NL; TAB; T("setge al"); NL;
             TAB; T("movzx rax, al"); NL; break;
         case TOKEN_OP_AND:
-            TAB; T("and rax, rbx"); NL; TAB; T("setne al"); NL;
+            TAB; T("and rax, rbx"); NL;
+            TAB; T("setne al"); NL;
             TAB; T("movzx rax, al"); NL; break;
-        case TOKEN_OP_OR: {
-            int lbl = new_label(codegen);
+        case TOKEN_OP_OR:
             TAB; T("or rax, rbx"); NL;
             TAB; T("setne al"); NL;
-            TAB; T("movzx rax, al"); NL;
-            break;
-        }
+            TAB; T("movzx rax, al"); NL; break;
         default: break;
         }
         break;
@@ -824,7 +959,11 @@ static void codegen_expr(CodeGen *codegen, Node *expr) {
 
     case NODE_FUNC_CALL: {
         NodeList* args = expr->ast.func_call.args;
-        size_t argc = args ? args->count : 0;
+        size_t    argc = args ? args->count : 0;
+
+        TAB; T("mov rax, rsp"); NL;
+        TAB; T("and rsp, -16"); NL;
+        TAB; T("push rax"); NL;
 
         if(argc > WIN64_INT_PARAMS) {
             for(size_t i = argc - 1; i >= WIN64_INT_PARAMS; --i) {
@@ -838,28 +977,45 @@ static void codegen_expr(CodeGen *codegen, Node *expr) {
             codegen_expr(codegen, args->items[i]);
             TAB; T("push rax"); NL;
         }
+
         for(int i = (int)reg_args - 1; i >= 0; --i) {
             TAB; T("pop "); T(WIN64_INT_REGISTERS[i]); NL;
         }
 
+        TAB; T("sub rsp, 32"); NL;
         TAB; T("call ");
-        codegen_buffer_write(&codegen->sec_text, expr->ast.func_call.name.start, expr->ast.func_call.name.len);
+        codegen_buffer_write(&codegen->sec_text,
+            expr->ast.func_call.name.start, expr->ast.func_call.name.len);
         NL;
+        TAB; T("add rsp, 32"); NL;
 
         if(argc > WIN64_INT_PARAMS) {
             size_t extra = argc - WIN64_INT_PARAMS;
             TAB; T("add rsp, "); TU(extra * 8); NL;
         }
+
+        TAB; T("mov rbx, rax"); NL;
+        TAB; T("pop rax"); NL;
+        TAB; T("mov rsp, rax"); NL;
+        TAB; T("mov rax, rbx"); NL;
         break;
     }
 
     case NODE_ARRAY: {
-        int element_size = 8;
-        Node* base = expr->ast.binary_op.left;
+        Node* base         = expr->ast.binary_op.left;
+        int   element_size = 8;
+
         if(base->type == NODE_VAR_ACCESS) {
-            CodeGenLocal* local = local_find(codegen, base->ast.var_access.name);
-            if(local) {
-                element_size = bytes_data_value(local->type);
+
+            CodeGenLocal* loc = local_find(codegen, base->ast.var_access.name);
+            if(loc) {
+                element_size = (loc->pointer_lvl > 0)
+                                ? bytes_data_value(loc->type)
+                                : 8;
+            } else {
+                Symbol* sym = lookup_table(codegen->table, base->ast.var_access.name);
+                if(sym && sym->pointer_lvl >= 1)
+                    element_size = bytes_data_value(sym->type);
             }
         }
 
@@ -867,15 +1023,15 @@ static void codegen_expr(CodeGen *codegen, Node *expr) {
         if(element_size != 1) {
             TAB; T("imul rax, "); TI(element_size); NL;
         }
-
         emit_mov_reg_reg(codegen, "rbx", "rax");
         codegen_expr(codegen, expr->ast.binary_op.left);
         TAB; T("add rax, rbx"); NL;
+
         switch(element_size) {
-            case 1: TAB; T("movzx rax, byte [rax]");  NL; break;
-            case 2: TAB; T("movzx rax, word [rax]");  NL; break;
-            case 4: TAB; T("movsxd rax, dword [rax]"); NL; break;
-            default: TAB; T("mov rax, [rax]");         NL; break;
+        case 1:  TAB; T("movzx rax, byte [rax]");   NL; break;
+        case 2:  TAB; T("movzx rax, word [rax]");   NL; break;
+        case 4:  TAB; T("movsxd rax, dword [rax]"); NL; break;
+        default: TAB; T("mov rax, [rax]");           NL; break;
         }
         break;
     }
@@ -908,22 +1064,27 @@ static void codegen_stmt(CodeGen *codegen, Node *stmt) {
                 if(data == TOKEN_KEYWORD_STRUCT || data == TOKEN_KEYWORD_UNION) {
                     Symbol* sym = lookup_table(codegen->table, current->ast.var_decl.typename);
                     if(sym && sym->category == SYMBOL_STRUCT) {
-                        if(data == TOKEN_KEYWORD_UNION) {
-                            var_size = codegen_union_size(codegen, current->ast.var_decl.typename);
-                        } else {
-                            var_size = codegen_struct_size(codegen, current->ast.var_decl.typename);
-                        }
+                        var_size = (data == TOKEN_KEYWORD_UNION)
+                                    ? codegen_union_size(codegen, current->ast.var_decl.typename)
+                                    : codegen_struct_size(codegen, current->ast.var_decl.typename);
                     }
                 } else {
                     var_size = (size_t)bytes_data_value(data);
                 }
             }
 
-            int offset = local_alloc(codegen, current->ast.var_decl.name, current->ast.var_decl.typename, var_size, 
-                current->ast.var_decl.data_type, current->ast.var_decl.pointer_lvl);
+            int offset = local_alloc(codegen,
+                current->ast.var_decl.name,
+                current->ast.var_decl.typename,
+                var_size,
+                current->ast.var_decl.data_type,
+                current->ast.var_decl.pointer_lvl);
+
             T("; var ");
-            codegen_buffer_write(&codegen->sec_text, current->ast.var_decl.name.start, current->ast.var_decl.name.len);
+            codegen_buffer_write(&codegen->sec_text,
+                current->ast.var_decl.name.start, current->ast.var_decl.name.len);
             T(" @ rbp"); TI(offset); NL;
+
             if(current->ast.var_decl.init) {
                 codegen_expr(codegen, current->ast.var_decl.init);
                 emit_store_local(codegen, offset);
@@ -932,6 +1093,10 @@ static void codegen_stmt(CodeGen *codegen, Node *stmt) {
             }
             break;
         }
+
+        case NODE_SWITCH_STMT:
+            codegen_switch(codegen, current);
+            break;
 
         case NODE_RETURN_STMT: {
             if(current->ast.return_stmt.value)
@@ -943,10 +1108,10 @@ static void codegen_stmt(CodeGen *codegen, Node *stmt) {
         }
 
         case NODE_BLOCK: {
-            CodeGenLocal* saved_local = codegen->locals;
-            int saved_stack_top = codegen->stack_top;
+            CodeGenLocal* saved_local     = codegen->locals;
+            int           saved_stack_top = codegen->stack_top;
             codegen_block(codegen, current);
-            codegen->locals = saved_local;
+            codegen->locals    = saved_local;
             codegen->stack_top = saved_stack_top;
             break;
         }
@@ -960,8 +1125,9 @@ static void codegen_stmt(CodeGen *codegen, Node *stmt) {
             TAB; T("jz "); emit_label_ref(codegen, label_else); NL;
 
             codegen_stmt(codegen, current->ast.if_stmt.then);
-            if(current->ast.if_stmt.otherwise)
-                { TAB; T("jmp "); emit_label_ref(codegen, label_end); NL; }
+            if(current->ast.if_stmt.otherwise) {
+                TAB; T("jmp "); emit_label_ref(codegen, label_end); NL;
+            }
 
             emit_label_ref(codegen, label_else); T(":"); NL;
 
@@ -977,9 +1143,10 @@ static void codegen_stmt(CodeGen *codegen, Node *stmt) {
             int label_end  = new_label(codegen);
 
             loop_push(codegen, label_cond, label_end);
+            break_push(codegen, BREAK_CTX_LOOP, label_end);
 
-            CodeGenLocal* saved_local = codegen->locals;
-            int saved_stack_top = codegen->stack_top;
+            CodeGenLocal* saved_local     = codegen->locals;
+            int           saved_stack_top = codegen->stack_top;
 
             emit_label_ref(codegen, label_cond); T(":"); NL;
             codegen_expr(codegen, current->ast.while_stmt.condition);
@@ -993,6 +1160,7 @@ static void codegen_stmt(CodeGen *codegen, Node *stmt) {
             codegen->stack_top = saved_stack_top;
 
             loop_pop(codegen);
+            break_pop(codegen);
             break;
         }
 
@@ -1002,6 +1170,7 @@ static void codegen_stmt(CodeGen *codegen, Node *stmt) {
             int label_end  = new_label(codegen);
 
             loop_push(codegen, label_cond, label_end);
+            break_push(codegen, BREAK_CTX_LOOP, label_end);
 
             emit_label_ref(codegen, label_body); T(":"); NL;
             codegen_stmt(codegen, current->ast.while_stmt.body);
@@ -1013,6 +1182,7 @@ static void codegen_stmt(CodeGen *codegen, Node *stmt) {
             emit_label_ref(codegen, label_end); T(":"); NL;
 
             loop_pop(codegen);
+            break_pop(codegen);
             break;
         }
 
@@ -1021,10 +1191,11 @@ static void codegen_stmt(CodeGen *codegen, Node *stmt) {
             int label_incr = new_label(codegen);
             int label_end  = new_label(codegen);
 
-            loop_push(codegen, label_incr, label_end);
+            loop_push(codegen, label_cond, label_end);
+            break_push(codegen, BREAK_CTX_LOOP, label_end);
 
-            CodeGenLocal* saved_locals = codegen->locals;
-            int saved_stack_top = codegen->stack_top;
+            CodeGenLocal* saved_locals    = codegen->locals;
+            int           saved_stack_top = codegen->stack_top;
 
             if(current->ast.for_stmt.init)
                 codegen_stmt(codegen, current->ast.for_stmt.init);
@@ -1046,19 +1217,20 @@ static void codegen_stmt(CodeGen *codegen, Node *stmt) {
             TAB; T("jmp "); emit_label_ref(codegen, label_cond); NL;
             emit_label_ref(codegen, label_end); T(":"); NL;
 
-            codegen->locals = saved_locals;
+            codegen->locals    = saved_locals;
             codegen->stack_top = saved_stack_top;
 
             loop_pop(codegen);
+            break_pop(codegen);
             break;
         }
 
         case NODE_BREAK_STMT:
-            if(codegen->loop_depth > 0) {
-                int lbl = codegen->loop_stack[codegen->loop_depth - 1].label_end;
+            if(codegen->break_depth > 0) {
+                int lbl = codegen->break_stack[codegen->break_depth - 1].label_end;
                 TAB; T("jmp "); emit_label_ref(codegen, lbl); NL;
             } else {
-                T("; break fora de loop\n");
+                T("; break fora de loop/switch\n");
             }
             break;
 
@@ -1101,15 +1273,8 @@ static bool view_eq_str(View name, const char* str) {
     return true;
 }
 
-static void emit_entry_exit(CodeGen *codegen) {
-    emit_mov_reg_reg(codegen, "rcx", "rax");
-    TAB; T("sub rsp, 32"); NL;
-    TAB; T("call [rel __imp_ExitProcess]"); NL;
-    TAB; T("hlt"); NL;
-}
-
 static void codegen_function(CodeGen *codegen, Node *node) {
-    View name = node->ast.func_decl.name;
+    View name     = node->ast.func_decl.name;
     bool is_entry = view_eq_str(name, codegen->entry_name);
     bool is_void  = (node->ast.func_decl.return_type == TOKEN_KEYWORD_VOID);
 
@@ -1117,7 +1282,8 @@ static void codegen_function(CodeGen *codegen, Node *node) {
     codegen->stack_top = 0;
 
     NodeList* params = node->ast.func_decl.params;
-    int frame = collect_frame_size(node->ast.func_decl.body);
+
+    int frame = collect_frame_size(codegen, node->ast.func_decl.body);
     frame += (params ? (int)params->count * 8 : 0);
 
     NL;
@@ -1128,13 +1294,22 @@ static void codegen_function(CodeGen *codegen, Node *node) {
     if(params) {
         for(size_t i = 0; i < params->count && i < (size_t)WIN64_INT_PARAMS; ++i) {
             Node* param = params->items[i];
-            int off = local_alloc(codegen, param->ast.var_decl.name,
-                                param->ast.var_decl.typename, 8,
-                                param->ast.var_decl.data_type,
-                                param->ast.var_decl.pointer_lvl);
+            int   off   = local_alloc(codegen,
+                            param->ast.var_decl.name,
+                            param->ast.var_decl.typename,
+                            8,
+                            param->ast.var_decl.data_type,
+                            param->ast.var_decl.pointer_lvl);
             TAB; T("mov qword [rbp"); TI(off); T("], ");
             T(WIN64_INT_REGISTERS[i]); NL;
         }
+    }
+
+    if(node->ast.func_decl.is_variadic) {
+        TAB; T("mov [rbp+16], rcx"); NL;
+        TAB; T("mov [rbp+24], rdx"); NL;
+        TAB; T("mov [rbp+32], r8");  NL;
+        TAB; T("mov [rbp+40], r9");  NL;
     }
 
     codegen_block(codegen, node->ast.func_decl.body);
@@ -1145,27 +1320,78 @@ static void codegen_function(CodeGen *codegen, Node *node) {
     emit_epilogue(codegen);
 }
 
+static const char* bss_directive(int bytes) {
+    switch (bytes)
+    {
+    case 1: return "resb";
+    case 2: return "resw";
+    case 3: return "resd";
+    default: return "resq";
+    }
+}
+
 static void codegen_global_var(CodeGen *codegen, Node *node) {
+    int var_size = 0;
+    if(node->ast.var_decl.pointer_lvl == 0) {
+        var_size = bytes_data_value(node->ast.var_decl.data_type);
+    }
+
     codegen_buffer_writez(&codegen->sec_bss, "__g_");
     codegen_buffer_write(&codegen->sec_bss,
         node->ast.var_decl.name.start, node->ast.var_decl.name.len);
-    codegen_buffer_writez(&codegen->sec_bss, ": resq 1\n");
+    codegen_buffer_writez(&codegen->sec_bss, ": ");
+    codegen_buffer_writez(&codegen->sec_bss, bss_directive(var_size));
+    codegen_buffer_writez(&codegen->sec_bss, " 1\n");
 
     if(node->ast.var_decl.init) {
-        T("; init global ");
-        codegen_buffer_write(&codegen->sec_text,
+        #define TI_INIT(value) codegen_buffer_writei(&codegen->sec_init, (long long)(value))
+        #define T_INIT(s) codegen_buffer_writez(&codegen->sec_init, (s))
+        #define NL_INIT codegen_buffer_writec(&codegen->sec_init, '\n')
+
+        T_INIT("; init global ");
+        codegen_buffer_write(&codegen->sec_init,
             node->ast.var_decl.name.start, node->ast.var_decl.name.len);
-        NL;
+        NL_INIT;
+        
+        codegen->in_func = true;
         codegen_expr(codegen, node->ast.var_decl.init);
-        TAB; T("mov [rel __g_");
-        codegen_buffer_write(&codegen->sec_text,
-            node->ast.var_decl.name.start, node->ast.var_decl.name.len);
-        T("], rax"); NL;
+        codegen->in_func = false;
+
+        switch (var_size)
+        {
+        case 1: {
+            T_INIT("    mov byte [rel __g_");
+            codegen_buffer_write(&codegen->sec_init, node->ast.var_decl.name.start, node->ast.var_decl.name.len);
+            T_INIT("], al\n");
+            break;
+        }
+        case 2: {
+            T_INIT("    mov word [rel __g_");
+            codegen_buffer_write(&codegen->sec_init, node->ast.var_decl.name.start, node->ast.var_decl.name.len);
+            T_INIT("], ax\n");
+            break;
+        }
+        case 4: {
+            T_INIT("    mov dword [rel __g_");
+            codegen_buffer_write(&codegen->sec_init, node->ast.var_decl.name.start, node->ast.var_decl.name.len);
+            T_INIT("], eax\n");
+            break;
+        }
+        default:
+            T_INIT("    mov qword [rel __g_");
+            codegen_buffer_write(&codegen->sec_init, node->ast.var_decl.name.start, node->ast.var_decl.name.len);
+            T_INIT("], rax\n");
+            break;
+        }
+
+        #undef TI_INIT
+        #undef T_INIT
+        #undef NL_INIT
     }
 }
 
 static void emit_builtin_write_stdout(CodeGen *codegen) {
-    PROLOG("__write_stdout", 24);
+    PROLOG("__write_stdout", 64);
 
     SAVE_PARAM_RCX(8);
     SAVE_PARAM_RDX(16);
@@ -1194,8 +1420,8 @@ static void emit_builtin_exit(CodeGen *codegen) {
 }
 
 static void emit_builtin_write_int(CodeGen *codegen) {
-    PROLOG("__write_int", 16);
-    
+    PROLOG("__write_int", 48);
+
     SAVE_PARAM_RCX(8);
 
     TAB; T("mov rcx, [rbp-8]"); NL;
@@ -1319,7 +1545,7 @@ static void emit_builtin_parse_args(CodeGen *codegen) {
 
 static void emit_builtin_parse_args_w(CodeGen *codegen) {
     PROLOG("__parse_args_w", 64);
-    
+
     SAVE_PARAM_RCX(8);
 
     TAB; T("sub rsp, 32"); NL;
@@ -1384,7 +1610,7 @@ static void emit_builtin_parse_args_w(CodeGen *codegen) {
 }
 
 static void emit_builtin_write_stdout_w(CodeGen *codegen) {
-    PROLOG("__write_stdout_w", 48);
+    PROLOG("__write_stdout_w", 80);
 
     SAVE_PARAM_RCX(8);
     SAVE_PARAM_RDX(16);
@@ -1429,9 +1655,14 @@ static void emit_builtin_write_stdout_w(CodeGen *codegen) {
 static void emit_builtin_entry(CodeGen *codegen) {
     NL;
     T("__entry:\n");
+    TAB; T("sub rsp, 8"); NL;
     TAB; T("push rbp"); NL;
     TAB; T("mov rbp, rsp"); NL;
     TAB; T("sub rsp, 48"); NL;
+
+    TAB; T("sub rsp, 32"); NL;
+    TAB; T("call __global_init"); NL;
+    TAB; T("add rsp, 32"); NL;
 
     TAB; T("xor rcx, rcx"); NL;
     TAB; T("mov rdx, 2048"); NL;
@@ -1542,7 +1773,7 @@ static void emit_builtin_open_file(CodeGen *codegen) {
 
 static void emit_builtin_open_file_w(CodeGen *codegen) {
     PROLOG("__open_file_w", 32);
-    
+
     SAVE_PARAM_RCX(8);
     SAVE_PARAM_RDX(16);
 
@@ -1617,6 +1848,46 @@ static void emit_builtin_read_file(CodeGen *codegen) {
     EPILOG;
 }
 
+static void emit_builtin_global_init(CodeGen *codegen, Node *program) {
+    PROLOG("__global_init", 16);
+
+    NodeList* decls = program->ast.program.declarations;
+    if(decls) {
+        for(size_t i = 0; i < decls->count; ++i) {
+            Node* item = decls->items[i];
+            if(!item || item->type != NODE_VAR_DECL) continue;
+            if(!item->ast.var_decl.init) continue;
+
+            int var_size = (item->ast.var_decl.pointer_lvl == 0) ? bytes_data_value(item->ast.var_decl.data_type) : 8;
+
+            codegen->in_func = true;
+            codegen_expr(codegen, item->ast.var_decl.init);
+            codegen->in_func = false;
+
+            switch (var_size)
+            {
+            case 1: TAB; T("mov byte [rel __g_"); break;
+            case 2: TAB; T("mov word [rel __g_"); break;
+            case 4: TAB; T("mov dword [rel __g_"); break;
+            default: TAB; T("mov qword [rel __g_"); break;
+            }
+
+            codegen_buffer_write(&codegen->sec_text, item->ast.var_decl.name.start, item->ast.var_decl.name.len);
+
+            switch (var_size)
+            {
+            case 1: T("], al"); break;
+            case 2: T("], ax"); break;
+            case 4: T("], eax"); break;
+            default: T("], rax"); break;
+            }
+            NL;
+        }
+    }
+
+    EPILOG;
+}
+
 static void emit_builtin_write_file(CodeGen *codegen) {
     PROLOG("__write_file", 32);
 
@@ -1640,13 +1911,34 @@ static void emit_builtin_write_file(CodeGen *codegen) {
 
 static void emit_builtin_close_file(CodeGen *codegen) {
     PROLOG("__close_file", 16);
-    
+
     SAVE_PARAM_RCX(8);
 
     TAB; T("call [rel __imp_CloseHandle]"); NL;
 
     EPILOG;
 }
+
+static void emit_builtin_va_next(CodeGen *codegen) {
+    PROLOG("__va_next", 16);
+
+    SAVE_PARAM_RCX(8);
+
+    TAB; T("mov rax, [rbp-8]"); NL;
+    TAB; T("mov rax, [rax]"); NL;
+
+    EPILOG;
+}
+
+static void emit_builtin_va_start(CodeGen *codegen) {
+    PROLOG("__va_start", 16);
+
+    TAB; T("mov rax, [rbp]"); NL;
+    TAB; T("lea rax, [rax + 24]"); NL;
+
+    EPILOG;
+}
+
 void codegen_init(CodeGen *codegen, Arena *arena, SymbolTable *table) {
     codegen->arena         = arena;
     codegen->table         = table;
@@ -1663,6 +1955,7 @@ void codegen_init(CodeGen *codegen, Arena *arena, SymbolTable *table) {
     codegen_buffer_init(&codegen->sec_text, arena, 16384);
     codegen_buffer_init(&codegen->sec_data, arena, 4096);
     codegen_buffer_init(&codegen->sec_bss,  arena, 1024);
+    codegen_buffer_init(&codegen->sec_init, arena, 1024);
 }
 
 void codegen_program(CodeGen *codegen, Node *program) {
@@ -1679,14 +1972,14 @@ void codegen_program(CodeGen *codegen, Node *program) {
     emit_builtin_write_stdout_w(codegen);
     emit_builtin_malloc(codegen);
     emit_builtin_free(codegen);
+    emit_builtin_va_start(codegen);
+    emit_builtin_va_next(codegen);
     emit_builtin_parse_args(codegen);
     emit_builtin_parse_args_w(codegen);
     emit_builtin_open_file(codegen);
     emit_builtin_open_file_w(codegen);
     emit_builtin_exit(codegen);
     emit_builtin_int_to_str(codegen);
-    emit_builtin_entry(codegen);
-    emit_bss_builtins(codegen);
 
     NodeList* decls = program->ast.program.declarations;
     if(!decls) return;
@@ -1715,6 +2008,10 @@ void codegen_program(CodeGen *codegen, Node *program) {
             break;
         }
     }
+
+    emit_builtin_global_init(codegen, program);
+    emit_builtin_entry(codegen);
+    emit_bss_builtins(codegen);
 }
 
 CodeGenBuffer codegen_finalize(CodeGen *codegen) {
@@ -1722,12 +2019,14 @@ CodeGenBuffer codegen_finalize(CodeGen *codegen) {
 
     if(codegen->sec_data.len > 0) {
         codegen_buffer_writez(&codegen->sec_text, "\nsection .data\n");
-        codegen_buffer_write(&codegen->sec_text, codegen->sec_data.data, codegen->sec_data.len);
+        codegen_buffer_write(&codegen->sec_text,
+            codegen->sec_data.data, codegen->sec_data.len);
     }
 
     if(codegen->sec_bss.len > 0) {
         codegen_buffer_writez(&codegen->sec_text, "\nsection .bss\n");
-        codegen_buffer_write(&codegen->sec_text, codegen->sec_bss.data, codegen->sec_bss.len);
+        codegen_buffer_write(&codegen->sec_text,
+            codegen->sec_bss.data, codegen->sec_bss.len);
     }
 
     return codegen->sec_text;

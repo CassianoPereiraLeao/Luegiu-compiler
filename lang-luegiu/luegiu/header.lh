@@ -1,0 +1,21 @@
+use target -> single
+
+extract -> "teste.lh"
+
+preprocess MESSAGE -> "vim do header"
+preprocess LNULL -> 0xDEAD
+preprocess KB -> 1024
+preprocess MB -> 1024 * 1024
+
+typedefinition enum {
+    TOKEN_EOF,
+    TOKEN_UNDEFINED,
+    TOKEN_IDENTIFIER,
+    
+    TOKEN_INT,
+    TOKEN_BIG,
+} TokenType;
+
+typedefinition struct {
+    char* buffer;
+} Bilau;

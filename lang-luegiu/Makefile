@@ -7,7 +7,7 @@ LINKER = gcc
 LINKER_FLAGS = -nostartfiles -e __entry 
 
 COMPILADOR = luegiu.exe
-FONTE_LUEGIU = main.luegiu
+FONTE_LUEGIU = ./luegiu/main.luegiu
 ASSEMBLY = output.asm
 OBJETO = output.obj
 EXECUTAVEL_FINAL = programa.exe
@@ -27,7 +27,7 @@ link:
 	$(LINKER) $(LINKER_FLAGS) $(OBJETO) -o $(EXECUTAVEL_FINAL)
 
 execute:
-	$(EXECUTAVEL_FINAL)
+	$(EXECUTAVEL_FINAL) ola
 
 clean_temp:
 	@del -f $(OBJETO) $(ASSEMBLY)
