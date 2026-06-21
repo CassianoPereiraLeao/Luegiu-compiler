@@ -290,6 +290,7 @@ static bool is_numeric_type(TokenType token) {
     case TOKEN_KEYWORD_UINT64:
     case TOKEN_KEYWORD_SMALL:
     case TOKEN_KEYWORD_BIG:
+    case TOKEN_KEYWORD_BOOLEAN:
         return true;
     default:
         return false;
@@ -320,9 +321,18 @@ static bool type_compatible(TokenType decl, size_t decl_ptr, TokenType actual, s
         return true;
     }
 
+    if(is_numeric_type(decl) || decl == TOKEN_KEYWORD_ENUM && decl_ptr == 0 && actual_ptr == 0 &&
+        (is_numeric_type(actual) || actual == TOKEN_KEYWORD_ENUM)) {
+        return true;
+    }
+
     if(decl == TOKEN_KEYWORD_LINK && decl_ptr == 0 && actual_ptr > 0) {
         return true;
     }
+
+    if(decl == TOKEN_KEYWORD_BOOLEAN && is_numeric_type(actual)) return true;
+    if(actual == TOKEN_KEYWORD_BOOLEAN && is_numeric_type(decl)) return true;
+    if(decl == TOKEN_KEYWORD_BOOLEAN && actual == TOKEN_KEYWORD_BOOLEAN) return true;
 
     if(decl_ptr > 0 || actual_ptr > 0)
         return (decl == actual && decl_ptr == actual_ptr);
@@ -428,6 +438,7 @@ static TokenType infer_type(TypeChecker *typecheck, SymbolTable *table, Node *ex
     case NODE_CHAR_LIT: return TOKEN_CHAR_LITERAL;
     case NODE_STRING_LIT: return TOKEN_STRING_LITERAL;
     case NODE_HEXA_LIT: return TOKEN_HEXA;
+    case NODE_BOOL_LIT: return TOKEN_KEYWORD_BOOLEAN;
 
     case NODE_VAR_ACCESS: {
         Symbol* sym = lookup_table(table, expr->ast.var_access.name);
@@ -463,6 +474,10 @@ static TokenType infer_type(TypeChecker *typecheck, SymbolTable *table, Node *ex
                 typecheck_error(typecheck, "'%.*s' espera pelo menos %zu argumento(s), recebeu %zu",
                     (int)name.len, name.start, sym->params_count, arg_count);
             }
+            return sym->type;
+        } else if(arg_count != sym->params_count) {
+            typecheck_error(typecheck, "'%.*s' espera %zu argumento(s), recebeu %zu",
+                (int)name.len, name.start, sym->params_count, arg_count);
             return sym->type;
         }
 
@@ -796,7 +811,7 @@ static void check_func_decl(TypeChecker *typechecker, SymbolTable *table, Node *
 
     if(is_entry) {
         bool valid = (return_type == TOKEN_KEYWORD_VOID && pointer_lvl == 0) ||
-                     (return_type == TOKEN_KEYWORD_LINK && pointer_lvl == 0);
+                        (return_type == TOKEN_KEYWORD_LINK && pointer_lvl == 0);
         if(!valid) {
             typecheck_error_at(typechecker, node,
                 "'start' so pode retornar 'void' ou 'link', recebeu '%s'",
@@ -1028,10 +1043,16 @@ static void check_node(TypeChecker *typechecker, SymbolTable *table, Node *node)
         case NODE_SWITCH_STMT: {
             TokenType subject_type = infer_type(typechecker, table, current->ast.switch_stmt.subject);
 
-            if(subject_type != TOKEN_UNDEFINED && !is_integer_type(subject_type) &&
-            subject_type != TOKEN_KEYWORD_BOOLEAN) {
+            if(subject_type != TOKEN_UNDEFINED &&
+            !is_integer_type(subject_type) &&
+            subject_type != TOKEN_KEYWORD_BOOLEAN &&
+            subject_type != TOKEN_KEYWORD_CHAR &&
+            subject_type != TOKEN_KEYWORD_UTF8CHAR &&
+            subject_type != TOKEN_KEYWORD_UTF16CHAR &&
+            subject_type != TOKEN_CHAR_LITERAL &&
+            subject_type != TOKEN_KEYWORD_ENUM) {
                 typecheck_error_at(typechecker, current,
-                    "'switch' espera uma expressao inteira ou booleana, recebeu '%s'",
+                    "'switch' espera uma expressao inteira, char, bool ou enum, recebeu '%s'",
                     token_to_str(subject_type));
             }
 
@@ -1046,11 +1067,28 @@ static void check_node(TypeChecker *typechecker, SymbolTable *table, Node *node)
                 Node* clause = cases->items[i];
                 Node* value  = clause->ast.case_clause.expr;
 
-                if(value->type != NODE_INT_LIT && value->type != NODE_HEXA_LIT) {
+                long long val;
+                bool is_const = resolve_case_const(table, value, &val);
+
+                if(!is_const && value->type == NODE_VAR_ACCESS) {
+                    Symbol* sym = lookup_table(table, value->ast.var_access.name);
+                    if(!sym) {
+                        typecheck_error_at(typechecker, value, "'%.*s' nao foi declarado",
+                            (int)value->ast.var_access.name.len, value->ast.var_access.name.start);
+                    } else if(!(sym->is_const && sym->has_const_value)) {
+                        typecheck_error_at(typechecker, value,
+                            "'%.*s' nao e uma constante valida para 'case'",
+                            (int)value->ast.var_access.name.len, value->ast.var_access.name.start);
+                    } else {
+                        val = sym->const_value;
+                        is_const = true;
+                    }
+                }
+
+                if(!is_const) {
                     typecheck_error_at(typechecker, value,
-                        "valor de 'case' deve ser uma constante inteira");
+                        "valor de 'case' deve ser uma constante inteira, char ou de enum");
                 } else {
-                    long long val = value->ast.numeric_literal.value;
                     bool repeated = false;
                     for(size_t j = 0; j < seen_count; ++j) {
                         if(seen_values[j] == val) { repeated = true; break; }
@@ -1165,7 +1203,7 @@ static void check_node(TypeChecker *typechecker, SymbolTable *table, Node *node)
             TokenType actual = infer_type(typechecker, table, val);
             size_t ptr = infer_ptr_lvl(table, val);
             if(actual != TOKEN_UNDEFINED &&
-               !type_compatible(typechecker->current_return_type, typechecker->current_return_ptr_lvl, actual, ptr)) {
+                !type_compatible(typechecker->current_return_type, typechecker->current_return_ptr_lvl, actual, ptr)) {
                 char exp_buf[64], got_buf[64];
                 format_type(exp_buf, sizeof(exp_buf), typechecker->current_return_type, typechecker->current_return_ptr_lvl);
                 format_type(got_buf, sizeof(got_buf), actual, ptr);

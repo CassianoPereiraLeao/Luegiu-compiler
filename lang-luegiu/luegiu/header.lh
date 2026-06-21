@@ -1,21 +1,27 @@
 use target -> single
 
 extract -> "teste.lh"
+typedefinition uint64 size;
 
 preprocess MESSAGE -> "vim do header"
 preprocess LNULL -> 0xDEAD
 preprocess KB -> 1024
 preprocess MB -> 1024 * 1024
 
+typedefinition struct {
+    char* start;
+    uint8 len;
+} View;
+
 typedefinition enum {
-    TOKEN_EOF,
-    TOKEN_UNDEFINED,
     TOKEN_IDENTIFIER,
-    
-    TOKEN_INT,
-    TOKEN_BIG,
+    TOKEN_KEYWORD_BIG,
+    TOKEN_KEYWORD_INT
 } TokenType;
 
 typedefinition struct {
-    char* buffer;
-} Bilau;
+    char* source;
+    size cursor;
+    size line;
+    size col;
+} Lexer;

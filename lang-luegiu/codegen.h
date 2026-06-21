@@ -36,6 +36,7 @@ typedef struct CodeGenLocal {
     int offset;
     TokenType type;
     size_t pointer_lvl;
+    bool is_implicit_ptr;
     struct CodeGenLocal* next;
 } CodeGenLocal;
 
@@ -76,6 +77,9 @@ typedef struct {
 
     bool in_func;
     bool entry_emmited;
+
+    bool has_va_reg_save;
+    int  va_reg_save_offset;
 } CodeGen;
 
 void codegen_buffer_init(CodeGenBuffer *buffer, Arena *arena, size_t initial_capacity);

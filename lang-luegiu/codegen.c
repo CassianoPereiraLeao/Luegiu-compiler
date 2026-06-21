@@ -113,6 +113,14 @@ void codegen_buffer_writeu(CodeGenBuffer *buffer, size_t value) {
     codegen_buffer_write(buffer, temp, len);
 }
 
+static bool view_eq_str(View name, const char* str) {
+    size_t slen = stringlen(str);
+    if(name.len != slen) return false;
+    for(size_t i = 0; i < slen; ++i)
+        if(name.start[i] != str[i]) return false;
+    return true;
+}
+
 static void loop_push(CodeGen *codegen, int label_cond, int label_end) {
     if(codegen->loop_depth >= CODEGEN_MAX_LOOP_DEPTH) return;
     codegen->loop_stack[codegen->loop_depth].label_cond = label_cond;
@@ -218,6 +226,24 @@ static CodeGenLocal* local_find(CodeGen *codegen, View name) {
         }
     }
     return NULL;
+}
+
+static int element_size_for(CodeGen *codegen, Node *base) {
+    if(base->type != NODE_VAR_ACCESS) return 8;
+
+    CodeGenLocal* loc = local_find(codegen, base->ast.var_access.name);
+    if(loc) {
+        if(loc->pointer_lvl > 1) return 8;
+        if(loc->pointer_lvl == 1) return bytes_data_value(loc->type);
+        return 8;
+    }
+
+    Symbol* sym = lookup_table(codegen->table, base->ast.var_access.name);
+    if(sym) {
+        if(sym->pointer_lvl > 1) return 8;
+        if(sym->pointer_lvl == 1) return bytes_data_value(sym->type);
+    }
+    return 8;
 }
 
 static int local_alloc(CodeGen *codegen, View name, View typename,
@@ -625,21 +651,8 @@ static bool emit_lvalue_addr(CodeGen *codegen, Node *expr) {
     }
 
     if(expr->type == NODE_ARRAY) {
-        Node* base = expr->ast.binary_op.left;
-        int   element_size = 8;
-
-        if(base->type == NODE_VAR_ACCESS) {
-            CodeGenLocal* local = local_find(codegen, base->ast.var_access.name);
-            if(local) {
-                element_size = (local->pointer_lvl > 0)
-                                ? bytes_data_value(local->type)
-                                : 8;
-            } else {
-                Symbol* sym = lookup_table(codegen->table, base->ast.var_access.name);
-                if(sym && sym->pointer_lvl >= 1)
-                    element_size = bytes_data_value(sym->type);
-            }
-        }
+        Node* base         = expr->ast.binary_op.left;
+        int   element_size = element_size_for(codegen, base);
 
         codegen_expr(codegen, expr->ast.binary_op.right);
         if(element_size != 1) {
@@ -660,6 +673,10 @@ static void codegen_expr(CodeGen *codegen, Node *expr) {
     switch(expr->type) {
 
     case NODE_INT_LIT:
+        emit_mov_reg_imm(codegen, "rax", expr->ast.numeric_literal.value);
+        break;
+
+    case NODE_BOOL_LIT:
         emit_mov_reg_imm(codegen, "rax", expr->ast.numeric_literal.value);
         break;
 
@@ -958,6 +975,28 @@ static void codegen_expr(CodeGen *codegen, Node *expr) {
     }
 
     case NODE_FUNC_CALL: {
+        if (view_eq_str(expr->ast.func_call.name, "__va_start")) {
+            if (!codegen->has_va_reg_save) {
+                break;
+            }
+
+            TAB; T("mov rax, rsp"); NL;
+            TAB; T("and rsp, -16"); NL;
+            TAB; T("push rax"); NL;
+
+            TAB; T("lea rcx, [rbp-"); TI(codegen->va_reg_save_offset); T("]"); NL;
+
+            TAB; T("sub rsp, 32"); NL;
+            TAB; T("call __va_start"); NL;
+            TAB; T("add rsp, 32"); NL;
+
+            TAB; T("mov rbx, rax"); NL;
+            TAB; T("pop rax"); NL;
+            TAB; T("mov rsp, rax"); NL;
+            TAB; T("mov rax, rbx"); NL;
+            break;
+        }
+
         NodeList* args = expr->ast.func_call.args;
         size_t    argc = args ? args->count : 0;
 
@@ -1003,21 +1042,7 @@ static void codegen_expr(CodeGen *codegen, Node *expr) {
 
     case NODE_ARRAY: {
         Node* base         = expr->ast.binary_op.left;
-        int   element_size = 8;
-
-        if(base->type == NODE_VAR_ACCESS) {
-
-            CodeGenLocal* loc = local_find(codegen, base->ast.var_access.name);
-            if(loc) {
-                element_size = (loc->pointer_lvl > 0)
-                                ? bytes_data_value(loc->type)
-                                : 8;
-            } else {
-                Symbol* sym = lookup_table(codegen->table, base->ast.var_access.name);
-                if(sym && sym->pointer_lvl >= 1)
-                    element_size = bytes_data_value(sym->type);
-            }
-        }
+        int   element_size = element_size_for(codegen, base);
 
         codegen_expr(codegen, expr->ast.binary_op.right);
         if(element_size != 1) {
@@ -1265,14 +1290,6 @@ static void codegen_stmt(CodeGen *codegen, Node *stmt) {
     }
 }
 
-static bool view_eq_str(View name, const char* str) {
-    size_t slen = stringlen(str);
-    if(name.len != slen) return false;
-    for(size_t i = 0; i < slen; ++i)
-        if(name.start[i] != str[i]) return false;
-    return true;
-}
-
 static void codegen_function(CodeGen *codegen, Node *node) {
     View name     = node->ast.func_decl.name;
     bool is_entry = view_eq_str(name, codegen->entry_name);
@@ -1285,6 +1302,12 @@ static void codegen_function(CodeGen *codegen, Node *node) {
 
     int frame = collect_frame_size(codegen, node->ast.func_decl.body);
     frame += (params ? (int)params->count * 8 : 0);
+
+    int reg_save_base = 0;
+    if (node->ast.func_decl.is_variadic) {
+        frame += WIN64_SHADOW_SPACE;
+        reg_save_base = frame;
+    }
 
     NL;
     codegen_buffer_write(&codegen->sec_text, name.start, name.len);
@@ -1306,10 +1329,15 @@ static void codegen_function(CodeGen *codegen, Node *node) {
     }
 
     if(node->ast.func_decl.is_variadic) {
-        TAB; T("mov [rbp+16], rcx"); NL;
-        TAB; T("mov [rbp+24], rdx"); NL;
-        TAB; T("mov [rbp+32], r8");  NL;
-        TAB; T("mov [rbp+40], r9");  NL;
+        codegen->has_va_reg_save    = true;
+        codegen->va_reg_save_offset = reg_save_base;
+
+        TAB; T("mov [rbp-"); TI(reg_save_base);      T("], rcx"); NL;
+        TAB; T("mov [rbp-"); TI(reg_save_base - 8);  T("], rdx"); NL;
+        TAB; T("mov [rbp-"); TI(reg_save_base - 16); T("], r8");  NL;
+        TAB; T("mov [rbp-"); TI(reg_save_base - 24); T("], r9");  NL;
+    } else {
+        codegen->has_va_reg_save = false;
     }
 
     codegen_block(codegen, node->ast.func_decl.body);
@@ -1318,6 +1346,7 @@ static void codegen_function(CodeGen *codegen, Node *node) {
         emit_mov_reg_imm(codegen, "rax", 0);
 
     emit_epilogue(codegen);
+    codegen->has_va_reg_save = false;
 }
 
 static const char* bss_directive(int bytes) {
@@ -1925,7 +1954,13 @@ static void emit_builtin_va_next(CodeGen *codegen) {
     SAVE_PARAM_RCX(8);
 
     TAB; T("mov rax, [rbp-8]"); NL;
-    TAB; T("mov rax, [rax]"); NL;
+    TAB; T("mov rcx, [rax]");   NL;
+    TAB; T("mov rdx, [rcx]");   NL;
+
+    TAB; T("add rcx, 8");       NL;
+    TAB; T("mov [rax], rcx");   NL;
+
+    TAB; T("mov rax, rdx");     NL;
 
     EPILOG;
 }
@@ -1933,8 +1968,8 @@ static void emit_builtin_va_next(CodeGen *codegen) {
 static void emit_builtin_va_start(CodeGen *codegen) {
     PROLOG("__va_start", 16);
 
-    TAB; T("mov rax, [rbp]"); NL;
-    TAB; T("lea rax, [rax + 24]"); NL;
+    SAVE_PARAM_RCX(8);
+    TAB; T("mov rax, [rbp-8]"); NL;
 
     EPILOG;
 }

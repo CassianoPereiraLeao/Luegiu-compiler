@@ -300,6 +300,18 @@ static Node* parse_primary(Parser *parser) {
         return node;
     }
 
+    if(match(parser, TOKEN_KEYWORD_TRUE)) {
+        Node* node = create_node_at(parser, NODE_BOOL_LIT, parser->prev);
+        node->ast.numeric_literal.value = 1;
+        return node;
+    }
+
+    if(match(parser, TOKEN_KEYWORD_FALSE)) {
+        Node* node = create_node_at(parser, NODE_BOOL_LIT, parser->prev);
+        node->ast.numeric_literal.value = 0;
+        return node;
+    }
+
     diag_fatal(parser->diag, parser->lexer->file_name,
         (size_t)parser->lexer->line, (size_t)parser->lexer->col,
         "esperava uma expressao valida");

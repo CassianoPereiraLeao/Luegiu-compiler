@@ -20,6 +20,7 @@ typedef enum {
     NODE_CHAR_LIT,
     NODE_STRING_LIT,
     NODE_HEXA_LIT,
+    NODE_BOOL_LIT,
     NODE_POSTFIX_OP,
     NODE_ARRAY,
     NODE_TYPEDEF_DECL,

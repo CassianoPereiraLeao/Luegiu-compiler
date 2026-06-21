@@ -1,5 +1,12 @@
 extract -> "header.lh"
-typedefinition uint64 dimention;
+
+link end(big code) {
+    if(code == 1) {
+        return 0x01;
+    }
+
+    return 0x00;
+}
 
 link memoryplace(big size) {
     link alloc = __malloc(size);
@@ -20,21 +27,107 @@ void showi(big value) {
     __write_int(value);
 }
 
-dimention strlen(const char* str) {
-    uint64 n = 0;
-    while(str[n]) n++;
+big strlen(const char* str) {
+    big n = 0;
+    while(str[n]) {
+        showi(n);
+        n++;
+    }
     return n; 
+}
+
+bool isalpha(char c) {
+    return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z');
+}
+
+bool isnumeric(char c) {
+    return (c >= '0' && c <= '9');
+}
+
+bool isidentifier(char c) {
+    return (isalpha(c) || c == '_');
+}
+
+bool stridentcompare(const char* view, const char* string) {
+    size i = 0;
+    while(i < view.len && string[i]) {
+        if(view.start[i] != string[i]) {
+            return false;
+        }
+        i++;
+    }
+
+    return (i == view.len && string[i]);
+}
+
+bool strlcompare(const char* string, const char* match, size len) {
+    if(strlen(string) != len) {
+        return false;
+    }
+
+    for(size i = 0; i < len; ++i) {
+        if(string[i] != match[i]) {
+            return false;
+        }
+    }
+
+    return true;
+}
+
+bool copy(const char* string, const char* source) {
+    for(uint64 i = 0; i < strlen(source); ++i) {
+        string[i] = source[i];
+    }
+
+    for(uint64 i = 0; i < strlen(string); ++i) {
+        if(string[i] != source[i]) {
+            return false;
+        }
+    }
+
+    return true;
+}
+
+bool strcompare(const char* string, const char* match) {
+    return strlcompare(string, match, strlen(match));
 }
 
 bool show(const char* format, ...) {
     __write_stdout(format, strlen(format));
 }
 
+Lexer create_lexer(const char* source) {
+    Lexer lexer;
+    lexer.source = source;
+    lexer.line = 0;
+    lexer.col = 0;
+    lexer.cursor = 0;
+    return lexer;
+}
+
+static TokenType check_keyword(const char* str) {
+    show("\n");
+    if(stridentcompare(str, "big")) { return TOKEN_KEYWORD_BIG; }
+    if(stridentcompare(str, "int")) { return TOKEN_KEYWORD_INT; }
+
+    return TOKEN_IDENTIFIER;
+}
+
+TokenType next_token(Lexer *lexer) {
+
+}
+
 link start(int argc, char* argv[]) {
-    char* alloc = (char*)memoryplace(4 * KB);
-    memorydelete(alloc);
-    if('a' == 'a') {
-        show("funciona");
-    }
-    return 0x00;
+    Lexer lexer = create_lexer(argv[1]);
+
+    show(lexer.source);
+    show("\n");
+
+    char* string;
+    copy(string, argv[i]);
+
+    TokenType type = check_keyword(string);
+    showi(type);
+
+    return end(0);
 }
