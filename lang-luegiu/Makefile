@@ -12,7 +12,7 @@ ASSEMBLY = output.asm
 OBJETO = output.obj
 EXECUTAVEL_FINAL = programa.exe
 
-all: build run assemble link execute
+all: build run assemble link clean_temp execute
 
 build:
 	$(CC) $(CFLAGS) ./*.c -o $(COMPILADOR)
