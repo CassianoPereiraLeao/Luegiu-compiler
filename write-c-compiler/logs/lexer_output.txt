@@ -1,0 +1,6 @@
+=======LEXER=======
+Token: TOKEN_IDENTIFIER | Lexema: int
+Token: TOKEN_IDENTIFIER | Lexema: main_game_loop
+Token: TOKEN_EQ | Lexema: =
+Token: TOKEN_INT_LIT | Lexema: 0
+Token: TOKEN_SEMICOLON | Lexema: ;
